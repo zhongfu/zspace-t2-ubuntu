@@ -130,7 +130,9 @@ Remember: the vendor USB recovery stick writes only `p3/p6/p8/p10/p11` and
 This path needs only the serial console.
 
 1. Reset the board: send a serial BREAK, then `b` (SysRq-b); or power-cycle it.
-2. Send CTRL+C during U-Boot's autoboot countdown to reach the `=>` prompt.
+2. Send CTRL+C during U-Boot's autoboot countdown to reach the `=>` prompt -
+   the window is one second (`CONFIG_BOOTDELAY=1`; the board ships that value
+   because the countdown is dead time on every boot).
 3. Put the eMMC behind `rkdeveloptool`:
 
 ```sh

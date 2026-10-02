@@ -41,7 +41,7 @@ patches touch:
 
 | path | blob |
 |---|---|
-| `drivers/pci/controller/dwc/pcie-dw-rockchip.c` | `8eacc9ce8c28` |
+| `drivers/pci/controller/dwc/pcie-dw-rockchip.c` | `272e4c7bc048` |
 | `arch/arm64/boot/dts/rockchip/rk3568-t2.dts` | `fd6ad60bf0f0` |
 | `arch/arm64/boot/dts/rockchip/Makefile` | `bd77bad158f8` |
 | `drivers/media/platform/rockchip/rkvdec/rkvdec.c` | `4647120067f7` |

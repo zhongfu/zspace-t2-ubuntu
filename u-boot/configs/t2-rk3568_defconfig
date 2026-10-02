@@ -97,7 +97,7 @@ CONFIG_BUTTON_ADC=y
 # `button reset-key-bk` trigger could never work.
 #
 # This is the **plain** image, the one that lives on the eMMC.  It boots the
-# eMMC tree immediately - no countdown to wait out, no prompt, no "press for the
+# eMMC tree immediately - no boot menu to wait out, no prompt, no "press for the
 # installer" nag on a board that has no card (the owner's request: two images,
 # one plain for the eMMC and one for the installer).  The installer is still
 # reachable deliberately: the user has to press the power button to power the
@@ -109,6 +109,15 @@ CONFIG_BUTTON_ADC=y
 # bootcmd that goes straight to the card's installer tree (it is what the card
 # carries in its loader partition).
 CONFIG_USE_BOOTCOMMAND=y
+# --- autoboot countdown: one second, not the default two ------------------
+# The autoboot countdown is dead time on every boot (measured 2 s of the ~23 s
+# from the U-Boot banner to the login prompt before this change).  One second
+# is kept rather than
+# 0: a window on the serial console is what makes the board recoverable
+# without the maskrom button (CTRL+C during the countdown reaches the U-Boot
+# prompt; with 0 the only way back in is the bootROM/SD card path documented
+# in docs/tinkering.md).
+CONFIG_BOOTDELAY=1
 CONFIG_BOOTCOMMAND="setenv t2_mode normal; if button power-key-bk; then sleep 0.4; if button power-key-bk; then setenv t2_mode installer; fi; fi; if test ${t2_mode} = installer; then if test x${t2_leds} = x1; then led power-led-green off; led power-led-red on; fi; echo T2: installer: booting the SD card; bootflow scan -lb mmc1; fi; if fatload mmc 0:3 ${loadaddr} /extlinux/extlinux.conf; then if test x${t2_leds} = x1; then led power-led-red off; led power-led-green on; fi; bootflow scan -lb mmc0; else bootflow scan -lb mmc1; fi"
 # --- power-on LEDs: red in U-Boot, then Linux's gpio-leds takes over --------
 # The control DT's `gpio-leds` node already carries the two front-panel power

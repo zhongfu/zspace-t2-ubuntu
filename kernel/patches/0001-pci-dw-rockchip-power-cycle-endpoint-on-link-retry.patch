@@ -29,10 +29,16 @@ Measured on a ZSpace T2: without this pcie2x1 reports "Device not found" and
 0000:01:00.0 [14e4:449d] never appears; with it the link trains and brcmfmac
 binds and loads its firmware normally.
 
+The waits above are the measured minimum, not slack: the WiFi controller needs
+the power cycle, then ~360ms to train, then 1s more before brcmfmac's firmware
+download succeeds; the two NVMe endpoints train on their own in ~250ms, so the
+initial wait is 500ms.  On the T2 this takes the PCIe WiFi controller's probe
+off the boot critical path from 5.9s to 2.9s.
+
 Signed-off-by: ZSpace T2 bring-up <t2@localhost>
 ---
 diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
-index af26a07c0c9e..8eacc9ce8c28 100644
+index af26a07c0c9e..272e4c7bc048 100644
 --- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
 +++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
 @@ -108,6 +108,7 @@ struct rockchip_pcie {
@@ -51,29 +57,37 @@ index af26a07c0c9e..8eacc9ce8c28 100644
  
  	/* Reset device */
  	gpiod_set_value_cansleep(rockchip->rst_gpio, 0);
-@@ -407,6 +409,60 @@ static int rockchip_pcie_start_link(struct dw_pcie *pci)
+@@ -407,6 +409,68 @@ static int rockchip_pcie_start_link(struct dw_pcie *pci)
  
  	gpiod_set_value_cansleep(rockchip->rst_gpio, 1);
  
 +	/*
 +	 * Quirk: some endpoints do not bring their link up until well after
-+	 * PERST# is released.  The Ampak AP6275P (BCM43752) WiFi module on the
-+	 * ZSpace T2 needs ~1-2s, and comes up reliably only if it is
++	 * PERST# is released, and come up reliably only if they are
 +	 * *power-cycled* once the PHY is running and PERST# is already
-+	 * released.  dw_pcie_wait_for_link() gives up after a hard-coded 1s
-+	 * and the first bus scan follows immediately, so without this the
-+	 * device is never enumerated.
++	 * released.  The Ampak AP6275P (BCM43752) WiFi module on the ZSpace T2
++	 * is one: dw_pcie_wait_for_link() gives up after a hard-coded 1s, the
++	 * first bus scan follows immediately, and the device is then never
++	 * enumerated ("Device not found").
 +	 *
-+	 * Wait here first, so endpoints that are merely slow - including the
-+	 * NVMe SSDs on this board - are unaffected; only if that fails do we
-+	 * retry by dropping and re-raising the endpoint supply while PERST#
-+	 * stays released, taking link training down and back up around it.
-+	 * That mirrors the in-flight "[RFC PATCH] PCI: rockchip-host: Retry
-+	 * link training on failure without PERST#" series, and the power cycle
-+	 * it performs is the sequence measured to work on this hardware.
++	 * The first wait is kept short (500ms) so that endpoints which train by
++	 * themselves - the two NVMe SSDs on this board, in ~250ms - are not
++	 * delayed, while one that needs the cycle barely loses any time before
++	 * it gets it.  Only if the wait fails do we retry by dropping and
++	 * re-raising the endpoint supply while PERST# stays released, taking
++	 * link training down and back up around it.  That mirrors the in-flight
++	 * "[RFC PATCH] PCI: rockchip-host: Retry link training on failure
++	 * without PERST#" series, and the power cycle it performs is the
++	 * sequence measured to work on this hardware.
++	 *
++	 * Measured on the T2 WiFi controller: 500ms wait (link still down) +
++	 * 1s discharge + ~360ms to link up + 1s settle = 2.9s from probe to
++	 * brcmfmac bind.  With the earlier 1500ms first wait and 3000ms settle
++	 * the same path cost 5.9s, and brcmfmac's firmware download and WPA2
++	 * association are unaffected by the shorter settle.
 +	 */
 +	for (retries = 0; retries < 3; retries++) {
-+		unsigned long timeout = jiffies + msecs_to_jiffies(1500);
++		unsigned long timeout = jiffies + msecs_to_jiffies(500);
 +
 +		do {
 +			if (rockchip_pcie_link_up(pci)) {
@@ -88,7 +102,7 @@ index af26a07c0c9e..8eacc9ce8c28 100644
 +				 * NVMe SSDs) are not delayed.
 +				 */
 +				if (retries)
-+					msleep(3000);
++					msleep(1000);
 +				return 0;
 +			}
 +			msleep(20);
@@ -112,7 +126,7 @@ index af26a07c0c9e..8eacc9ce8c28 100644
  	return 0;
  }
  
-@@ -841,11 +897,24 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
+@@ -841,11 +905,24 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
  	if (ret)
  		return ret;
  
