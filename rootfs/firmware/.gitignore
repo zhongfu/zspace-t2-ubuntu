@@ -1,0 +1,3 @@
+# rootfs/fetch.sh copies the non-redistributable vendor Broadcom firmware here.
+# It must never be committed.
+brcm/

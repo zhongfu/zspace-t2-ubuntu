@@ -1,0 +1,25 @@
+diff --git a/scripts/dtc/pylibfdt/Makefile b/scripts/dtc/pylibfdt/Makefile
+index ce9c2d09..ba6bc9c4 100644
+--- a/scripts/dtc/pylibfdt/Makefile
++++ b/scripts/dtc/pylibfdt/Makefile
+@@ -17,11 +17,19 @@ PYLIBFDT_srcs = $(addprefix $(LIBFDT_srcdir)/,$(LIBFDT_SRCS)) \
+ PEP_VERSION = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(subst -,,$(EXTRAVERSION))
+ 
+ quiet_cmd_pymod = PYMOD   $@
++# Host-only fix: swig >= 4 no longer emits the legacy `PyInt_AsLong`
++# compatibility macro it used to define for Python 3 (swig <= 3 shipped
++# `#define PyInt_AsLong PyLong_AsLong` in pyhead.swg).  libfdt.i's
++# `fdt_next_node()` typemap still spells it, so without this define the module
++# links with an unresolved `PyInt_AsLong` and binman's `import libfdt` dies on
++# the host before U-Boot is ever compiled.  `-D` on the compiler command line
++# is enough: the symbol is only referenced from that one typemap.
+       cmd_pymod = unset CROSS_COMPILE; unset CFLAGS; \
+ 		CC="$(HOSTCC)" LDSHARED="$(HOSTCC) -shared " \
+ 		LDFLAGS="$(HOSTLDFLAGS)" \
+ 		VERSION="$(PEP_VERSION)" \
+-		CPPFLAGS="$(HOSTCFLAGS) -I$(LIBFDT_srcdir)" OBJDIR=$(obj) \
++		CPPFLAGS="$(HOSTCFLAGS) -I$(LIBFDT_srcdir) -DPyInt_AsLong=PyLong_AsLong -DPyString_FromString=PyUnicode_FromString -DPyString_AsString=PyUnicode_AsUTF8 -DPyInt_FromLong=PyLong_FromLong" \
++		OBJDIR=$(obj) \
+ 		SOURCES="$(PYLIBFDT_srcs)" \
+ 		SWIG_OPTS="-I$(LIBFDT_srcdir) -I$(LIBFDT_srcdir)/.." \
+ 		$(PYTHON3) $< --quiet build_ext --inplace

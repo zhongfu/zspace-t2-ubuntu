@@ -1,0 +1,93 @@
+# Example out-of-band provisioning config for a ZSpace T2.
+#
+# Copy this to a FAT partition with the label T2-CONFIG as /t2-config.txt (the
+# distribution image can carry one: `scripts/t2-image.py --config <file>`).
+# A normal boot applies the hostname/wifi/ssh/ble keys via t2-provision.service;
+# a flash-mode boot (kernel cmdline t2.mode=flash) instead runs the initramfs
+# installer, which reads the same file for the install.* / flash.* keys.  After
+# that you can mount the partition on any OS and edit the file - saving a
+# changed file re-applies it on the next boot, which is how WiFi credentials are
+# rotated without a keyboard.
+#
+# Format: flat key=value, one per line.  `#` starts a comment; blank lines and
+# CRLF line endings are fine; an unknown key is logged and ignored rather than
+# fatal (see /var/log/t2-provision.log on the board).
+#
+# Keys:
+#   hostname=            set the hostname (hostnamectl)
+#   wifi.ssid=           WiFi network name
+#   wifi.psk=            WPA2 pre-shared key (required together with wifi.ssid)
+#   wifi.country=        two-letter regulatory domain (applied only if `iw` is
+#                        installed in the image)
+#   ssh.authorized_key=  a public key for root; may be repeated, applied by
+#                        appending to /root/.ssh/authorized_keys
+#   install.presses=     arm the initramfs installer's install flow (it runs
+#                        only in flash mode): the power button must be pressed
+#                        this many times inside install.window before the card's
+#                        image is written to the eMMC.  Omit the key and the
+#                        installer drops to its recovery shell instead.
+#   install.payload=     partition label holding the image (default T2-INSTALL)
+#   install.file=        file inside it (optional; the installer's built-in
+#                        default applies)
+#   install.sha256=      verified before the first byte is written
+#   install.target=      disk to overwrite (default /dev/mmcblk0)
+#   install.window=      seconds allowed for the presses (default 20)
+#   install.button=      input device name (default "rk805 pwrkey")
+#   install.key=         key code (default 116 = KEY_POWER)
+#                        Feedback on the power LEDs: red blinks for each counted
+#                        press and stays red while writing; green steady when the
+#                        write is done.  Anything unarmed or unconfirmed is a
+#                        no-op logged to the installer's log.
+#   install.decompress=  `zstd` if the payload is zstd-compressed (streamed
+#                        through `zstd -dc`), omitted for a raw file
+#   flash.presses=       arm the initramfs installer's flash flow: the card
+#                        carries the payload tree (rootfs image, U-Boot FIT,
+#                        idbloader, FAT boot tree) in the T2-FLASH partition, and
+#                        the power button must be pressed this many times inside
+#                        flash.window before it is written to the eMMC.  Omit the
+#                        key and the installer drops to its recovery shell.
+#   flash.payload=       partition label holding the payload tree (default
+#                        T2-FLASH)
+#   flash.dir=           directory inside that partition (optional; the
+#                        installer's built-in default applies)
+#   flash.sha256=        sha256 of the rootfs file inside it, verified before
+#                        the first write
+#   flash.disk=          disk to repartition (default /dev/mmcblk0)
+#   flash.window=        seconds allowed for the presses (default 60)
+#   flash.button=        input device name (default "rk805 pwrkey")
+#   ble.psk=             pre-shared key for the BLE management service
+#                        (t2-ble.service); clients authenticate with an HMAC
+#                        challenge, so the key never crosses the link.  Read it
+#                        back with `t2-ble-password`; without this key the
+#                        service generates its own random one on first start.
+#
+# An ssh key is worth setting even when the wired NIC works: it is the only
+# credential that survives leaving the bench LAN.
+
+hostname=t2
+
+wifi.ssid=MyNetwork
+wifi.psk=change-me
+wifi.country=DE
+
+ssh.authorized_key=ssh-ed25519 AAAA...replace-with-your-key you@laptop
+
+# BLE management (t2-ble.service): the key a Web Bluetooth page must know to
+# authenticate.  Optional - the service generates a random one if this is
+# absent, and `t2-ble-password` prints whichever is in force.
+ble.psk=change-me-too
+
+# Install flow: press the power button 3 times within 20 s to confirm writing
+# the T2-INSTALL payload to /dev/mmcblk0.  Leave this commented out unless the
+# card really carries that payload.
+#install.presses=3
+#install.payload=T2-INSTALL
+#install.sha256=0000000000000000000000000000000000000000000000000000000000000000
+
+# Flash flow: press the power button 2 times within 60 s to confirm writing the
+# T2-FLASH payload tree to the eMMC.  Leave this commented out unless the card
+# really carries that payload.
+#flash.presses=2
+#flash.payload=T2-FLASH
+#flash.dir=<directory inside the T2-FLASH partition>
+#flash.sha256=0000000000000000000000000000000000000000000000000000000000000000

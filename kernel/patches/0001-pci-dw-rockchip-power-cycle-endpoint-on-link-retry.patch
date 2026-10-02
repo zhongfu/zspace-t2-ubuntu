@@ -1,0 +1,144 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ZSpace T2 bring-up <t2@localhost>
+Date: Tue, 30 Sep 2026 13:00:00 +0000
+Subject: [PATCH 1/5] PCI: dw-rockchip: power-cycle the endpoint and retry if
+ the link does not train
+
+Some endpoints only bring their link up well after PERST# is released, and
+only after they have been power-cycled with the PHY already running and PERST#
+already released.  The Ampak AP6275P (Broadcom BCM43752) PCIe WiFi module on
+the ZSpace T2 (RK3568) is one: dw_pcie_wait_for_link() gives up after a
+hard-coded 1s, the first bus scan follows immediately, and the device is then
+never enumerated ("Device not found"), so nothing binds to it.
+
+Keep a handle on the optional vpcie3v3 endpoint supply - it used to be fetched
+with devm_regulator_get_enable_optional(), which discards it - and, if the link
+is still down after waiting, drop and re-raise that supply while PERST# stays
+released, taking link training down and back up around the cycle.  Endpoints
+that are merely slow are unaffected: the wait comes first and the retry only
+runs when it fails.
+
+This mirrors the in-flight "[RFC PATCH] PCI: rockchip-host: Retry link training
+on failure without PERST#" series (Geraldo Nascimento, Jun 2025), which does the
+same for the older RK3399 host driver; the power cycle it performs is the
+sequence measured to bring this module up reliably.  After a cycle the endpoint
+also needs a moment to finish its own boot before its config space behaves, so
+that path waits before returning.
+
+Measured on a ZSpace T2: without this pcie2x1 reports "Device not found" and
+0000:01:00.0 [14e4:449d] never appears; with it the link trains and brcmfmac
+binds and loads its firmware normally.
+
+Signed-off-by: ZSpace T2 bring-up <t2@localhost>
+---
+diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+index af26a07c0c9e..8eacc9ce8c28 100644
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -108,6 +108,7 @@ struct rockchip_pcie {
+ 	struct dw_pcie pci;
+ 	void __iomem *apb_base;
+ 	struct phy *phy;
++	struct regulator *vpcie3v3;
+ 	struct clk_bulk_data *clks;
+ 	unsigned int clk_cnt;
+ 	struct reset_control *rst;
+@@ -386,6 +387,7 @@ static void rockchip_pcie_enable_l0s(struct dw_pcie *pci)
+ static int rockchip_pcie_start_link(struct dw_pcie *pci)
+ {
+ 	struct rockchip_pcie *rockchip = to_rockchip_pcie(pci);
++	int retries;
+ 
+ 	/* Reset device */
+ 	gpiod_set_value_cansleep(rockchip->rst_gpio, 0);
+@@ -407,6 +409,60 @@ static int rockchip_pcie_start_link(struct dw_pcie *pci)
+ 
+ 	gpiod_set_value_cansleep(rockchip->rst_gpio, 1);
+ 
++	/*
++	 * Quirk: some endpoints do not bring their link up until well after
++	 * PERST# is released.  The Ampak AP6275P (BCM43752) WiFi module on the
++	 * ZSpace T2 needs ~1-2s, and comes up reliably only if it is
++	 * *power-cycled* once the PHY is running and PERST# is already
++	 * released.  dw_pcie_wait_for_link() gives up after a hard-coded 1s
++	 * and the first bus scan follows immediately, so without this the
++	 * device is never enumerated.
++	 *
++	 * Wait here first, so endpoints that are merely slow - including the
++	 * NVMe SSDs on this board - are unaffected; only if that fails do we
++	 * retry by dropping and re-raising the endpoint supply while PERST#
++	 * stays released, taking link training down and back up around it.
++	 * That mirrors the in-flight "[RFC PATCH] PCI: rockchip-host: Retry
++	 * link training on failure without PERST#" series, and the power cycle
++	 * it performs is the sequence measured to work on this hardware.
++	 */
++	for (retries = 0; retries < 3; retries++) {
++		unsigned long timeout = jiffies + msecs_to_jiffies(1500);
++
++		do {
++			if (rockchip_pcie_link_up(pci)) {
++				/*
++				 * The link is up, but an endpoint that just got
++				 * power-cycled still needs a moment to finish
++				 * its own boot before it answers config
++				 * requests - brcmfmac's firmware download
++				 * fails outright if it is probed immediately.
++				 * Only pay this on the retry path, so
++				 * endpoints that came up by themselves (the
++				 * NVMe SSDs) are not delayed.
++				 */
++				if (retries)
++					msleep(3000);
++				return 0;
++			}
++			msleep(20);
++		} while (time_before(jiffies, timeout));
++
++		if (!rockchip->vpcie3v3)
++			break;
++
++		dev_dbg(pci->dev,
++			"link down, power-cycling the endpoint (retry %d)\n",
++			retries + 1);
++
++		regulator_disable(rockchip->vpcie3v3);
++		msleep(1000);		/* let the endpoint discharge */
++		if (regulator_enable(rockchip->vpcie3v3)) {
++			dev_err(pci->dev, "failed to re-enable vpcie3v3\n");
++			break;
++		}
++	}
++
+ 	return 0;
+ }
+ 
+@@ -841,11 +897,24 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	/* DON'T MOVE ME: must be enable before PHY init */
+-	ret = devm_regulator_get_enable_optional(dev, "vpcie3v3");
+-	if (ret < 0 && ret != -ENODEV)
+-		return dev_err_probe(dev, ret,
+-				     "failed to enable vpcie3v3 regulator\n");
++	/*
++	 * Quirk support: keep a handle on the endpoint supply so that a link
++	 * that never trains can be retried with a real power cycle (see
++	 * rockchip_pcie_start_link()).  Enable it exactly where it used to be
++	 * enabled - "DON'T MOVE ME: must be enable before PHY init".
++	 */
++	rockchip->vpcie3v3 = devm_regulator_get_optional(dev, "vpcie3v3");
++	if (IS_ERR(rockchip->vpcie3v3)) {
++		if (PTR_ERR(rockchip->vpcie3v3) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(rockchip->vpcie3v3),
++					     "failed to get vpcie3v3 regulator\n");
++		rockchip->vpcie3v3 = NULL;
++	} else {
++		ret = regulator_enable(rockchip->vpcie3v3);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to enable vpcie3v3 regulator\n");
++	}
+ 
+ 	ret = rockchip_pcie_phy_init(rockchip);
+ 	if (ret)

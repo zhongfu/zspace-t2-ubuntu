@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * ZSpace T2 (RK3568) board additions for U-Boot.
+ *
+ * The board DT is the board's own `rk3568-t2.dts` (a copy of the Linux one,
+ * minus the Linux-only `&vdec` label), and this file is picked up
+ * automatically as `arch/arm/dts/<dtb-basename>-u-boot.dtsi`.  U-Boot includes
+ * only the *first* matching `-u-boot.dtsi` (scripts/Makefile.lib:240-248), so
+ * the SoC-level rules have to be pulled in explicitly here - without this
+ * include the bootph / `u-boot,spl-boot-order` / mmc-alias properties the
+ * RK3568 needs would be silently dropped.
+ *
+ * Nothing board-specific is added today: the T2's deltas over the EVB (RK809
+ * PMIC, UART2 console, eMMC + SD, and the SARADC `adc-keys` RESET key) are
+ * already in the board DT.  Keeping this file means future board-level U-Boot
+ * fixes have a home that is not the shared `rk3568-u-boot.dtsi`.
+ */
+
+#include "rk3568-u-boot.dtsi"
+
+/*
+ * Keep the two power LEDs dark until U-Boot has read and judged the PMIC's
+ * power-on source (the defconfig's preboot gate).  U-Boot's LED uclass applies
+ * a child's `default-state` the moment it probes - led_bind() sets
+ * DM_FLAG_PROBE_AFTER_BIND and led_post_probe() then writes the state - which
+ * lights power-green before any board logic runs, i.e. even on a plug-in
+ * power-on that is about to be shut back off.  Deleting the property leaves
+ * both LEDs untouched at probe, so the only writes to them are the `led`
+ * commands the gate itself issues.  This is in the U-Boot-only overlay so the
+ * Linux DT keeps its own defaults (green on, red off).
+ */
+&z2s_leds {
+	power-green {
+		/delete-property/ default-state;
+	};
+	power-red {
+		/delete-property/ default-state;
+	};
+};

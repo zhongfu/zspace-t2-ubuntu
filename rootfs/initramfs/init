@@ -1,0 +1,360 @@
+#!/bin/sh
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+# The kernel had no /dev/console (empty /dev in the cpio) so it warned
+# "unable to open an initial console" and init had no stdin (sh hit EOF ->
+# "Attempted to kill init"). Create the console node and re-open stdio before
+# anything else; then bring up the pseudo-filesystems.
+mknod /dev/console c 5 1
+exec </dev/console >/dev/console 2>&1
+mount -t devtmpfs dev /dev
+# This busybox ships only a few PATH symlinks (ash, mount, ls, ...), so applets
+# such as chroot / route / blkid / switch_root are NOT found by bare name -
+# which silently breaks scripts.  Install the whole applet symlink set so plain
+# command names work everywhere below (and for anything run later).
+busybox --install -s /bin 2>/dev/null
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+# devtmpfs mounted over /dev hides the initramfs' own /dev/pts, so the devpts
+# mount target has to be (re)created first.  Without it busybox telnetd cannot
+# allocate a pty and dies the moment a client connects.
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts 2>/dev/null
+
+# Bring-up diagnostics.  These belong to the *recovery* path only: a distro
+# boot should go straight to systemd, and the installer prints its own banner,
+# so nothing here runs unless the root did not come up (see the call site next
+# to bring_up_recovery_net at the bottom).
+show_bringup_info() {
+echo
+echo "=== ZSpace T2 mainline 7.3 bring-up initramfs ==="
+uname -a
+echo "cmdline: $(cat /proc/cmdline)"
+echo "--- mmc hosts ---"
+ls /sys/class/mmc_host/
+echo "--- block devices ---"
+cat /proc/partitions
+echo "--- PCIe devices ---"
+ls /sys/bus/pci/devices/
+echo "--- dmesg (tail) ---"
+dmesg | tail -25
+}
+
+# ---------------------------------------------------------------------------
+# Network.  The T2 has no usable onboard NIC (both vendor GMACs are disabled),
+# so this is normally a USB Ethernet adapter on one of the USB-A ports; r8152
+# (RTL8156B) and the other USB NIC drivers are built into the kernel, and
+# /lib/firmware/rtl_nic/ carries the r8152 patch blobs.  Everything below is
+# best effort - a failure just leaves the serial console as the only channel.
+# ---------------------------------------------------------------------------
+mkdir -p /etc /var/run /tmp /lib/firmware
+
+# ---------------------------------------------------------------------------
+# Flash mode.  A card-booted board whose cmdline carries t2.mode=flash hands
+# the whole boot to the installer: the check is a literal, early one so that
+# flash mode can never fall through to the rootfs path below (an installer
+# must not mount a rootfs it is about to overwrite).  /installer.sh replaces
+# the rootfs/recovery decision entirely and, when it has nothing to do, drops
+# to its own recovery shell - it never returns to this script (PID 1 returning
+# would be a kernel panic).
+# ---------------------------------------------------------------------------
+FLASH_MODE=''
+for w in $(cat /proc/cmdline); do
+	case "$w" in
+	t2.mode=flash) FLASH_MODE=1 ;;
+	esac
+done
+if [ "$FLASH_MODE" = 1 ]; then
+	echo
+	echo "=== ZSpace T2 installer initramfs: flash mode (t2.mode=flash) ==="
+	echo "The card's config partition decides what happens next; see /installer.sh."
+	echo
+	exec busybox sh /installer.sh
+fi
+
+# ---------------------------------------------------------------------------
+# Recovery-only network bring-up.  DHCP, the USB NCM gadget and telnetd/httpd
+# exist so that a board whose rootfs did *not* come up is still reachable.  On
+# the normal path none of this runs: the distro's systemd/NetworkManager owns
+# DHCP, and anything configured here would be thrown away at switch_root.  The
+# old code ran `udhcpc` for up to 12 s per interface *before* switch_root and
+# then flushed and downed every interface to undo it - pure boot-time waste,
+# and it only worked for interfaces that happened to be up.  Now the initramfs
+# touches the network only when it is about to drop to the bring-up shell.
+# ---------------------------------------------------------------------------
+bring_up_recovery_net() {
+
+cat > /etc/udhcpc.script <<'EOF'
+#!/bin/sh
+# minimal busybox udhcpc lease handler (there is no /usr/share/udhcpc here)
+case "$1" in
+	deconfig)
+		ifconfig "$interface" 0.0.0.0
+		;;
+	bound|renew)
+		ifconfig "$interface" "$ip" netmask "$subnet"
+		[ -n "$router" ] && busybox route add default gw "$router"
+		# the default route above is essential: without it the board can
+		# reach its own subnet but nothing else (no apt, no upstream DNS)
+		if [ -n "$dns" ]; then
+			: > /etc/resolv.conf
+			for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
+		fi
+		;;
+esac
+EOF
+chmod +x /etc/udhcpc.script
+
+echo
+echo "--- network ---"
+for path in /sys/class/net/*; do
+	name=${path##*/}	# no basename applet in this busybox build
+	[ "$name" = "lo" ] && continue
+	echo "* $name: $(cat "$path/address" 2>/dev/null)"
+	ifconfig "$name" up
+	# DHCP first; if the LAN hands out nothing, fall back to a static
+	# address so the board is still reachable from a direct host link.
+	if udhcpc -i "$name" -s /etc/udhcpc.script -n -q -t 4 -T 3 >/dev/null 2>&1; then
+		echo "  dhcp ok"
+	else
+		# harmless on a normal LAN (off-subnet) but usable for a direct
+		# host<->board cable
+		echo "  dhcp: no lease, using static 10.10.10.2/24"
+		ifconfig "$name" 10.10.10.2 netmask 255.255.255.0 up
+	fi
+	ifconfig "$name" | grep -E 'inet |RX packets' | sed 's/^/  /'
+done
+
+# --- USB gadget on the Type-C OTG port (fcc00000.usb) ---------------------
+# The OTG port is a peripheral (UDC "fcc00000.usb") and it is wired to the dev
+# host, so a CDC-NCM ethernet gadget gives a direct host<->board link that does
+# not depend on the LAN or its VLANs.  Host side: give the new USB netdev
+# 10.55.55.1/24.  Best effort - a failure just means no gadget link.
+if [ -n "$(ls /sys/class/udc 2>/dev/null)" ]; then
+	# Nothing creates this mount point in the initramfs (devtmpfs only covers
+	# /dev, and /sys comes from sysfs), so without the mkdir the configfs
+	# mount fails silently and the gadget below does nothing at all.
+	mkdir -p /sys/kernel/config
+	mount -t configfs none /sys/kernel/config 2>/dev/null
+	G=/sys/kernel/config/usb_gadget/t2
+	if [ -d /sys/kernel/config/usb_gadget ] && mkdir -p "$G" 2>/dev/null; then
+		echo 0x1d6b > "$G/idVendor"		# Linux Foundation
+		echo 0x0104 > "$G/idProduct"		# Multifunction Composite Gadget
+		echo 0x0100 > "$G/bcdDevice"
+		echo 0x0200 > "$G/bcdUSB"
+		mkdir -p "$G/strings/0x409"
+		echo "T2-0001" > "$G/strings/0x409/serialnumber"
+		echo "ZSpace" > "$G/strings/0x409/manufacturer"
+		echo "T2 mainline bringup" > "$G/strings/0x409/product"
+		mkdir -p "$G/configs/c.1/strings/0x409"
+		echo "NCM" > "$G/configs/c.1/strings/0x409/configuration"
+		mkdir -p "$G/functions/ncm.usb0"
+		# fixed MACs, so the host's interface name (enx<mac>) is stable
+		# across boots instead of changing with the random default
+		echo 02:00:00:00:55:02 > "$G/functions/ncm.usb0/dev_addr"
+		echo 02:00:00:00:55:01 > "$G/functions/ncm.usb0/host_addr"
+		busybox ln -sf "$G/functions/ncm.usb0" "$G/configs/c.1/" 2>/dev/null
+		# NB: /sys/class/udc is a *directory* - `cat` on it fails ("Is a
+		# directory") and silently writes nothing, leaving the gadget
+		# unbound.  `ls` emits the UDC name, which is what UDC wants.
+		ls /sys/class/udc > "$G/UDC" 2>/dev/null
+		sleep 1
+		ifconfig usb0 10.55.55.2 netmask 255.255.255.0 up 2>/dev/null
+		# Serve DHCP on the gadget link so the *host* side configures
+		# itself: setting an address there needs root, which the agent
+		# driving this board does not have.
+		mkdir -p /var/lib/misc
+		cat > /etc/udhcpd.conf <<-'EOF'
+			start 10.55.55.10
+			end 10.55.55.20
+			interface usb0
+			opt router 10.55.55.2
+			opt dns 10.55.55.2
+			opt subnet 255.255.255.0
+			lease_file /tmp/udhcpd.leases
+			lease 86400
+		EOF
+		# udhcpd exits immediately if its lease file cannot be opened
+		# ("can't open '/tmp/udhcpd.leases': No such file or directory"),
+		# so create it first - the file must already exist.
+		: > /tmp/udhcpd.leases
+		busybox udhcpd /etc/udhcpd.conf
+		echo "--- usb gadget ---"
+		echo "  udc: $(cat "$G/UDC" 2>/dev/null)  usb0: $(ifconfig usb0 2>/dev/null | grep -o 'inet addr:[0-9.]*')"
+	fi
+fi
+
+# telnetd gives a remote shell; wget (on the board) can pull files from a
+# host-side HTTP server.  httpd serves the initramfs root read-only.
+# (No WiFi on this board - the vendor's WiFi SDIO controllers are disabled;
+# mmc1 is an SD card slot.)
+echo "--- services ---"
+# these applets are compiled in but not reachable by bare name (only a subset
+# of applets exist as PATH symlinks in this initramfs), hence the busybox prefix
+busybox telnetd -l /bin/ash && echo "  telnetd: 23" || echo "  telnetd: failed"
+busybox httpd -p 80 -h / && echo "  httpd: 80 (serving /)" || echo "  httpd: failed"
+echo
+
+# The SD slot needs no help at boot: with the card properly seated the
+# controller finds it at the initial probe (~t=1.9 s) on every boot.  A forced
+# unbind/bind rescan was tried here and removed again - it only made an
+# already-working mmcblk1 disappear and reappear.
+
+# NOTE: do *not* give tty0 a shell here.  /dev/tty0 is an alias for the
+# *active* VT, so once the real rootfs takes over that shell and
+# getty@tty1 would both own the same terminal and interleave their prompts
+# and output on the HDMI display.  It is spawned at the very end instead,
+# on the bring-up path only (where nothing else listens on tty0).
+
+# Nothing writes to the virtual console, so the HDMI framebuffer (fbcon) shows
+# only the boot logo.  Mirror the essentials onto tty0 so a display (or the
+# JetKVM) shows something useful.
+{
+	echo "ZSpace T2 - mainline $(uname -r)"
+	echo
+	echo "console: serial ttyS2 @1500000"
+	echo "network: $(ifconfig eth0 2>/dev/null | grep -o 'inet addr:[0-9.]*')"
+	echo "gadget : $(ifconfig usb0 2>/dev/null | grep -o 'inet addr:[0-9.]*')"
+	echo
+	echo "block devices:"
+	cat /proc/partitions
+} > /dev/tty0 2>/dev/null
+}
+
+# ---------------------------------------------------------------- rootfs --
+# Hand over to the root filesystem named on the *kernel cmdline*.  This block
+# used to hardcode /dev/mmcblk0p11, which silently ignored `root=` and made the
+# distro image unbootable: the FIT's kernel would start with the cmdline
+# pointing at p6, this script would then mount p11 and switch_root into the old
+# bring-up rootfs anyway (measured 2026-09-30: cmdline said
+# root=PARTUUID=614e0000-0000 while `findmnt -no SOURCE /` said mmcblk0p11).
+#
+# Resolution follows the standard contract, using the busybox applets that are
+# installed above:
+#
+#   root=/dev/mmcblk0p6          literal device
+#   root=LABEL=zspace-rootfs     filesystem label (what the T2 DTS now uses;
+#                                stable across rebuilds because the distro
+#                                builder always writes that label)
+#   root=UUID=<fs-uuid>          filesystem UUID
+#
+# PARTUUID= is deliberately *not* supported here: busybox 1.36 `findfs` only
+# understands LABEL= and UUID=, and its `blkid` does not report PARTUUID at
+# all, so supporting it would mean a hand-rolled GPT scan.  The DTS must use
+# one of the forms above.
+#
+# If the root cannot be resolved or mounted we stay in this bring-up shell,
+# which keeps the serial console, telnetd, httpd and the USB gadget reachable
+# for recovery - the same failure path the old gate used to guard.
+ROOTSPEC=""
+# rootflags= carries the root mount options (the distro's /etc/fstab no longer
+# names the root device at all, so `errors=remount-ro` arrives this way).
+# rootfstype= is honoured too; both are optional.
+ROOTFLAGS=""
+ROOTFSTYPE=""
+for w in $(cat /proc/cmdline); do
+	case "$w" in
+		root=*)       ROOTSPEC=${w#root=} ;;
+		rootflags=*)  ROOTFLAGS=${w#rootflags=} ;;
+		rootfstype=*) ROOTFSTYPE=${w#rootfstype=} ;;
+	esac
+done
+
+# udev is not running in here, so /dev/disk/by-{label,uuid} does not exist and
+# busybox `findfs` - which only follows those symlinks - cannot resolve
+# anything (measured 2026-09-30: findfs worked fine on the booted p11 rootfs,
+# where udev creates the symlinks, and failed for all 10 retries in the
+# initramfs).  Probe the block devices directly instead; busybox `blkid` prints
+# LABEL="..." UUID="..." TYPE="..." and does not support -s/-o value.
+resolve_root() {
+	case "$1" in
+		LABEL=*) tag=LABEL ;;
+		UUID=*)  tag=UUID ;;
+		*)       return 1 ;;
+	esac
+	want=${1#*=}
+	for s in /sys/class/block/*; do
+		case "${s##*/}" in loop*|ram*|zram*|*boot0|*boot1) continue ;; esac
+		d=/dev/${s##*/}
+		[ -b "$d" ] || continue
+		# `busybox <applet>` and not the bare name: this busybox only ships a
+		# subset of PATH symlinks (empty `busybox --install` aside), and
+		# `blkid`/`tr`/`switch_root` were measured "not found" as bare
+		# commands in the bring-up shell (2026-09-30).
+		got=$(busybox blkid "$d" 2>/dev/null | busybox tr ' ' '\n' | busybox sed -n "s/^$tag=\"\(.*\)\"\$/\1/p")
+		if [ -n "$got" ] && [ "$got" = "$want" ]; then
+			echo "$d"
+			return 0
+		fi
+	done
+	return 1
+}
+
+ROOTDEV=""
+i=0
+while [ $i -lt 10 ]; do
+	i=$((i + 1))
+	case "$ROOTSPEC" in
+		/dev/*)          ROOTDEV=$ROOTSPEC ;;
+		LABEL=*|UUID=*)  ROOTDEV=$(resolve_root "$ROOTSPEC") ;;
+		*)               ROOTDEV="" ;;
+	esac
+	[ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] && break
+	# the storage controller probes asynchronously, so a label lookup can come
+	# back empty on the first tries; re-resolve rather than only re-check
+	echo "waiting for root ($ROOTSPEC), try $i"
+	sleep 1
+done
+
+if [ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ]; then
+	mkdir -p /newroot
+	# The root is mounted here, not by the kernel: honour rootflags= from the
+	# cmdline and always end up writable unless rootflags says otherwise
+	# (busybox mount rejects a repeated rw/ro, so only add ours when absent).
+	root_opts=${ROOTFLAGS:-rw}
+	case ",$root_opts," in
+		*,ro,*|*,rw,*) ;;
+		*) root_opts="$root_opts,rw" ;;
+	esac
+	if mount -t "${ROOTFSTYPE:-ext4}" -o "$root_opts" "$ROOTDEV" /newroot 2>/dev/null; then
+		if [ -x /newroot/sbin/init ]; then
+			echo "rootfs on $ROOTDEV ($ROOTSPEC) - switching to it"
+			# Nothing to hand back: on this path the initramfs never touched
+			# the network, so the interfaces are exactly as the kernel left
+			# them and NetworkManager sees fresh devices and runs DHCP with
+			# its own renewer.  The old code ran DHCP here and then had to
+			# flush every IPv4 address and down every interface to undo it
+			# (otherwise NM reported the device as "connected (externally)",
+			# with no renewer and a lease that eventually expired) - a flush
+			# loop that only ever worked for interfaces that happened to be
+			# up, and that cost 12 s per interface of boot time to reach.
+			# Doing nothing is both faster and safer.  usb0 is only ever
+			# brought up on the recovery path, below.
+			mount --move /dev /newroot/dev
+			mount --move /proc /newroot/proc
+			mount --move /sys /newroot/sys
+			mkdir -p /newroot/dev/pts
+			mount --move /dev/pts /newroot/dev/pts 2>/dev/null
+			exec busybox switch_root /newroot /sbin/init
+		fi
+		echo "*** $ROOTDEV mounted but has no /sbin/init - staying in the bring-up shell ***"
+		umount /newroot
+	else
+		echo "*** failed to mount $ROOTDEV - staying in the bring-up shell ***"
+	fi
+else
+	echo "*** no usable root device for root=$ROOTSPEC - staying in the bring-up shell ***"
+fi
+
+# Root did not come up, so the board has to be reachable some other way
+# (serial, HDMI/JetKVM, or the USB gadget link).  This is the only place the
+# network, gadget and telnetd/httpd are set up - see bring_up_recovery_net.
+show_bringup_info
+bring_up_recovery_net
+
+echo "Dropping to shell."
+# Only the bring-up path gets a shell on the framebuffer console: here nothing
+# else listens on tty0, so the HDMI display plus the JetKVM's USB keyboard form
+# a usable terminal.  See the note above for why this must not happen when the
+# real rootfs is going to be started.
+busybox setsid sh -c 'exec sh -i </dev/tty0 >/dev/tty0 2>&1' &
+exec sh -i

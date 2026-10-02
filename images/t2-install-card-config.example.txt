@@ -1,0 +1,71 @@
+# t2-config for the *flash* card: the card's T2-CONFIG FAT carries this file
+# merged with the boot tree as *files* (/Image, the dtb, /extlinux/,
+# /uboot.env, /Image.old) plus /u-boot.itb and /idbloader.img, and a single
+# T2-FLASH ext4 payload partition carries /rootfs.ext4.zst - no nested boot
+# image.  This file arms the initramfs installer's flash flow: it repartitions
+# the eMMC, streams the rootfs into p4, formats p3 as FAT and copies the tree
+# in, then writes U-Boot to p1 and the SPL last.
+#
+# The card boots the board in flash mode (kernel cmdline t2.mode=flash, from
+# the card descriptor /extlinux/extlinux.conf), so /init *is* the installer; it
+# reads this file from the card's T2-CONFIG partition itself.  The card also
+# carries its own rootfs for a normal boot and recovery.
+#
+# Build it with:
+#   images/build-installer.sh
+# which reads this file as its /t2-config.txt template and substitutes the
+# placeholder with the sha256 of build/out/rootfs.ext4.zst.  Pass a different
+# file to change the arming:
+#   images/build-installer.sh --config my-config.txt
+# The manual equivalent:
+#   images/t2-boot-fat.py --image build/out/Image --dtb build/out/rk3568-t2.dtb \
+#       --out-dir build/installer-boot-tree --flash-append t2.mode=flash
+#   sed "s#<sha256 of the payload>#$(sha256sum build/out/rootfs.ext4.zst | cut -d' ' -f1)#" \
+#       images/t2-install-card-config.example.txt > /tmp/card-config.txt
+#   images/t2-image.py --out build/out/installer.img --rootfs none --size auto \
+#       --config /tmp/card-config.txt --config-size 256M \
+#       --boot-dir build/installer-boot-tree --payload-dir build/installer-payload
+#
+# The card's *own* boot tree is build/installer-boot-tree (its extlinux `append`
+# points at the card rootfs label); the payload ext4 only holds the rootfs image
+# the installer writes to the eMMC.  Do not mix the two up.
+
+# Arm the flash flow: this many power-button presses inside the window confirm
+# it.  Omit it (or miss the window) and the installer drops to its recovery
+# shell instead.  LED feedback: the red power LED blinks 1.0 s on / 1.0 s off
+# before the first press, then 0.1 s shorter after every counted press (press 1
+# -> 0.9/0.9, ..., press 9 -> 0.1/0.1).  At the target (press 10) the red LED
+# goes solid for 5 s, then the write phase alternates red/green at ~2 Hz
+# (0.25 s each) until green steady.
+flash.presses=10
+flash.window=60
+# The PMIC power button.  The kernel builds the driver in
+# (CONFIG_INPUT_RK805_PWRKEY=y) because the flash-mode initramfs ships no
+# modules - with it modular this device does not exist and the gate can never
+# be satisfied.
+flash.button=rk805 pwrkey
+
+# The payload ext4 partition on the card (default T2-FLASH).  Its rootfs image
+# is at the filesystem root, verified before anything is written.
+flash.payload=T2-FLASH
+flash.rootfs=/rootfs.ext4.zst
+flash.sha256=<sha256 of the payload>
+flash.decompress=zstd
+
+# The boot tree root.  Default is the mounted card FAT root, which is where the
+# tree files already sit, so it is normally left out.  The installer reads
+# Image, the dtb (from extlinux/t2-emmc.conf's `fdt`), uboot.env and Image.old
+# here, and copies them into a fresh `mkfs.vfat -n T2-BOOT` p3.
+#flash.tree=/run/t2-installer-config
+flash.uboot=u-boot.itb
+# `none` keeps the vendor SPL already at LBA 0x40 in the eMMC, which is the
+# default plan until the loader-acceptance test (notes/distro-image.md 4.6)
+# shows the vendor SPL loads our u-boot.itb.  Set flash.idbloader=idbloader.img
+# to write our own SPL pair as well - build-installer.sh copies idbloader.img
+# into the tree, so this is what the published card does.
+flash.idbloader=idbloader.img
+
+# The disk to repartition: p1 uboot (LBA 0x4000), p2 oem (LBA 0x6000), p3 boot
+# (FAT), p4 rootfs to the end.  The old oem (p7, LBA 0x1c48000) is backed up to
+# this card and copied into the new one before anything else is written.
+flash.disk=/dev/mmcblk0

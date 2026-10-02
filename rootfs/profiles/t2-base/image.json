@@ -1,0 +1,19 @@
+{
+  "artifact": "rootfs.ext4",
+  "label": "zspace-rootfs",
+  "size": 6442450944,
+  "partition": { "name": "rootfs", "lba": 294912, "size": 15032385536 },
+  "root": {
+    "partuuid": "614e0000-0000-4b53-8000-1d28000054a9",
+    "fstype": "ext4",
+    "cmdline": "root=LABEL=zspace-rootfs rootfstype=ext4 rw rootwait rootflags=errors=remount-ro panic=15"
+  },
+  "firmware_src": "build/firmware",
+  "fs_uuid": "5c2b1f7a-9d43-4a8e-b0f6-3e7d1a2c5b89",
+  "fit": {
+    "artifact": "build/out/t2-mainline-boot.img",
+    "tree": "build/kernel",
+    "kernel": "arch/arm64/boot/Image",
+    "dtb": "arch/arm64/boot/dts/rockchip/rk3568-t2.dtb"
+  }
+}

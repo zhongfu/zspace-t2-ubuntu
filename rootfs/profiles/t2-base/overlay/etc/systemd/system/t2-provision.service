@@ -1,0 +1,27 @@
+[Unit]
+Description=ZSpace T2: apply the out-of-band config partition (t2-config)
+Documentation=file:/usr/share/doc/t2-provision/README
+# Provisioning configures the *network*, so it must finish before
+# NetworkManager starts: ordering on network-pre.target is the supported way
+# to be earlier than the network managers.  DefaultDependencies=no because the
+# ordering here is explicit (and because a board that cannot reach
+# multi-user.target should still get its credentials applied).
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target NetworkManager.service
+Wants=network-pre.target
+ConditionPathExists=/usr/local/sbin/t2-provision.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/t2-provision.sh
+# Mounting the config partition and writing a keyfile are microseconds; the
+# only slow step is `nmcli con up`, which is allowed to fail without failing
+# the unit (the script swallows it and NetworkManager retries).
+TimeoutStartSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

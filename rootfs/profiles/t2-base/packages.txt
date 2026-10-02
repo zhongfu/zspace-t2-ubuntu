@@ -1,0 +1,73 @@
+# t2-base packages - minimal bootable system with a shell, ssh and DHCP.
+# One dpkg package per line; blank lines and # comments are ignored.
+#
+# The Ubuntu base tarball has NO init/service manager, so systemd + systemd-sysv
+# (which provides /sbin/init) are load-bearing entries here, not conveniences.
+systemd
+systemd-sysv
+dbus
+kmod
+openssh-server
+network-manager
+wpasupplicant
+systemd-timesyncd
+iproute2
+iputils-ping
+ca-certificates
+sudo
+bash-completion
+less
+vim-tiny
+nano
+curl
+wget
+htop
+tmux
+parted
+e2fsprogs
+pciutils
+usbutils
+nvme-cli
+lm-sensors
+avahi-daemon
+
+# /usr/bin/growpart for hooks/80-growroot.sh (the image is built smaller than
+# p6; the rest of the partition is unusable until the first boot grows it).
+cloud-guest-utils
+
+# P3 out-of-band provisioning: dnsmasq is the DHCP server for the USB gadget
+# link (t2-usbgadget.service, interface-scoped drop-in in /etc/dnsmasq.d) - it
+# is what makes "plug the board into any laptop" work without configuring the
+# laptop by hand.  iw applies the config file's wifi.country= to the regulatory
+# domain (the script logs and skips when iw is absent).
+dnsmasq
+iw
+
+# BLE management (t2-ble.service, /usr/local/sbin/t2-ble.py): a BlueZ GATT
+# server, so the board can be reached from a Web Bluetooth page on any laptop
+# with no cable, no card reader and no network.  bluez is the daemon; the
+# firmware blob is already in the image (/lib/firmware/brcm).  python3-dbus +
+# python3-gi are the D-Bus bindings the GATT application needs - this is the
+# only Python in the image, and it is what keeps the alternative (a C GATT
+# application) out of a distribution that is otherwise shell-only.
+bluez
+python3-dbus
+python3-gi
+
+# i2c-tools: the initramfs installer reads the rk809 PMIC's power-on source
+# register (rk809 @ 0x20 on i2c0, reg 0xf5) to log how the board was turned on,
+# and skips that line cleanly when i2cget is absent.  It is kept here as the
+# rootfs admin tool for the same bus; no rootfs service reads it today.
+i2c-tools
+
+# Kernel A/B fallback, userspace half (t2-boot-commit.service): the persistent
+# U-Boot environment is a file inside the FAT `boot` partition, so
+# /etc/fw_env.config points at /run/t2-boot/uboot.env and this unit clears
+# `bootcount` / `upgrade_available` (and promotes /Image.old on a fallback
+# boot) through fw_setenv.  `u-boot-tools` alone is NOT enough on this distro:
+# Ubuntu noble's u-boot-tools ships mkimage/dumpimage but no
+# fw_printenv/fw_setenv - those come from libubootenv-tool (libubootenv0.1 is
+# pulled in as its dependency).  Without it the unit logs and exits 0, so a
+# board whose image predates this package still boots; the rollback counter
+# just is not cleared by userspace.
+libubootenv-tool

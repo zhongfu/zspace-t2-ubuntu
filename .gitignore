@@ -1,0 +1,6 @@
+build/
+*.zst
+*.img
+*.itb
+*.bin
+__pycache__/
