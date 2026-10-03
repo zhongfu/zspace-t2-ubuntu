@@ -206,8 +206,8 @@ echo
 # on the bring-up path only (where nothing else listens on tty0).
 
 # Nothing writes to the virtual console, so the HDMI framebuffer (fbcon) shows
-# only the boot logo.  Mirror the essentials onto tty0 so a display (or the
-# JetKVM) shows something useful.
+# only the boot logo.  Mirror the essentials onto tty0 so the display shows
+# something useful.
 {
 	echo "ZSpace T2 - mainline $(uname -r)"
 	echo
@@ -346,15 +346,15 @@ else
 fi
 
 # Root did not come up, so the board has to be reachable some other way
-# (serial, HDMI/JetKVM, or the USB gadget link).  This is the only place the
+# (serial, HDMI, or the USB gadget link).  This is the only place the
 # network, gadget and telnetd/httpd are set up - see bring_up_recovery_net.
 show_bringup_info
 bring_up_recovery_net
 
 echo "Dropping to shell."
 # Only the bring-up path gets a shell on the framebuffer console: here nothing
-# else listens on tty0, so the HDMI display plus the JetKVM's USB keyboard form
-# a usable terminal.  See the note above for why this must not happen when the
+# else listens on tty0, so the HDMI display plus a USB keyboard form a usable
+# terminal.  See the note above for why this must not happen when the
 # real rootfs is going to be started.
 busybox setsid sh -c 'exec sh -i </dev/tty0 >/dev/tty0 2>&1' &
 exec sh -i

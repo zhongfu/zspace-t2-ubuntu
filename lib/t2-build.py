@@ -107,7 +107,7 @@ RK_FIT = ROOT / "images" / "rk-fit.py"
 T2_FLASH = ROOT / "tools" / "t2-flash.py"
 RKDEVELOPTOOL = ROOT / "tools" / "rkdeveloptool" / "build" / "rkdeveloptool"
 
-# GPT, parsed from zspace-dumps/full_flash.img (supports the vendor layout):
+# GPT, parsed from a full vendor flash dump (supports the vendor layout):
 BOOT_LBA = 0x8000               # p3 "boot"
 BOOT_SIZE = 64 * 1024 * 1024    # p3 = 67,108,864 B
 ROOTFS_LBA = 0x36A8000          # p11 "source_rootfs"
@@ -116,11 +116,8 @@ FLASH_CHUNK = 8 * 1024 * 1024   # rockusb `wl` chunk used by t2-flash.py
 FIT_STRUCT_ALIGN = 0x800        # rk-fit.py: FIT structure is padded to 0x800
 
 # tools/t2-flash.py: T2_TTY/T2_LOG defaults; keep in sync if the adapter moves.
-T2_TTY = os.environ.get("T2_TTY", "/dev/ttyUSB1")
-T2_LOG = os.environ.get(
-    "T2_LOG",
-    "/media/zhongfu/f5f88fb3-2ec7-42d5-91d0-a5bfdadfc092/"
-    "zspace-dumps/serial/serial-live.log")
+T2_TTY = os.environ.get("T2_TTY", "/dev/ttyUSB0")
+T2_LOG = os.environ.get("T2_LOG", "/tmp/zspace/serial-live.log")
 
 # Ubuntu base rootfs (26.04.1 LTS, Resolute Raccoon).  The sha256 is the arm64
 # entry of the upstream SHA256SUMS shipped next to the tarball (cdimage).
