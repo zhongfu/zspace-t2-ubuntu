@@ -29,7 +29,8 @@
 #   * in flash mode the old oem is backed up to the card before the table
 #     changes, the new oem is created at a fresh LBA, and the boot chain
 #     (rootfs -> boot tree -> U-Boot -> SPL) is written last;
-#   * LED feedback (red while writing, green when done);
+#   * LED feedback (red blink while waiting for the presses, steady red while
+#     verifying and writing, green when done);
 #   * not armed is a clean stop: the board drops to the recovery shell.
 #
 # Config keys (card FAT partition, `t2-config.txt`; exactly the names and
@@ -570,7 +571,6 @@ install_run() {
 	DECOMPRESS=${install_decompress:-}
 
 	log "armed: $PRESSES press(es) within ${WINDOW}s confirms writing $LABEL:$FILE to $TARGET"
-	blink "$LED_GREEN" 3 0.2 1
 
 	if [ -z "$LABEL" ]; then
 		log "no install.payload label; nothing to install"
@@ -623,6 +623,14 @@ install_run() {
 		drop_to_shell
 	fi
 
+	# The confirmation gate comes first, so the user is not left waiting through
+	# the payload verification before being asked to press.  (The sha256/zstd
+	# verification below still runs before the first write.)
+	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_INSTALL_FORCE:-}"; then
+		log "press count not confirmed ($PRESSES required); nothing written"
+		drop_to_shell
+	fi
+
 	if [ -n "$WANT_SHA" ]; then
 		got=$(sha256sum "$payload" | cut -d' ' -f1)
 		if [ "$got" != "$WANT_SHA" ]; then
@@ -643,11 +651,6 @@ install_run() {
 		log "payload zstd stream verified"
 	fi
 
-	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_INSTALL_FORCE:-}"; then
-		log "press count not confirmed ($PRESSES required); nothing written"
-		drop_to_shell
-	fi
-
 	log "confirmed: writing $(basename "$payload") to $TARGET${DECOMPRESS:+ (zstd)}"
 	if [ "${T2_INSTALL_DRYRUN:-}" = 1 ]; then
 		blink "$LED_RED" 2 0.2 0
@@ -659,11 +662,11 @@ install_run() {
 		drop_to_shell
 	fi
 
-	( while :; do
-		led_set "$LED_RED" 1; led_set "$LED_GREEN" 0; sleep 0.25
-		led_set "$LED_RED" 0; led_set "$LED_GREEN" 1; sleep 0.25
-	  done ) &
-	blinker=$!
+	# Steady red for the write: the confirmation above already left it solid, and
+	# green is reserved for the end (the old alternating blinker flickered green
+	# here, which reads as "done" mid-write).
+	led_set "$LED_RED" 1
+	led_set "$LED_GREEN" 0
 	rc=0
 	if [ -n "$DECOMPRESS" ]; then
 		zstd -dc "$payload" | dd of="$TARGET" bs=4M conv=fsync 2>/dev/null || rc=$?
@@ -674,9 +677,6 @@ install_run() {
 		log "dd failed; the target may be in an unknown state - reinstall from the card"
 		drop_to_shell
 	fi
-	kill "$blinker" 2>/dev/null || true
-	wait "$blinker" 2>/dev/null || true
-	blinker=''
 	led_set "$LED_RED" 0
 	led_set "$LED_GREEN" 1
 	sync
@@ -767,15 +767,6 @@ flash_run() {
 		log "rootfs is not zstd-compressed but flash.decompress=zstd; refusing"
 		drop_to_shell
 	fi
-	if [ "$DECOMPRESS" = zstd ]; then
-		require_zstd "$(basename "$rootfs")" || drop_to_shell
-		if ! zstd -t "$rootfs" >/dev/null 2>&1; then
-			log "rootfs failed its zstd integrity test; refusing"
-			drop_to_shell
-		fi
-		log "rootfs zstd stream verified"
-	fi
-
 	disk_size=$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 0)
 	if [ "$disk_size" -eq 0 ]; then
 		log "cannot size $DISK"
@@ -801,6 +792,14 @@ flash_run() {
 		drop_to_shell
 	fi
 
+	# The confirmation gate comes before the verifications, so the user is not
+	# left waiting through sha256/zstd before being asked to press.  (Both
+	# verifications still run before the first write.)
+	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_FLASH_FORCE:-}"; then
+		log "press count not confirmed ($PRESSES required); not flashing"
+		drop_to_shell
+	fi
+
 	if [ -n "$WANT_SHA" ]; then
 		got=$(sha256sum "$rootfs" | cut -d' ' -f1)
 		if [ "$got" != "$WANT_SHA" ]; then
@@ -808,6 +807,17 @@ flash_run() {
 			drop_to_shell
 		fi
 		log "rootfs sha256 verified ($got)"
+	fi
+
+	# The write cannot catch a corrupt stream (`zstd -dc f | dd` reports only
+	# dd's status), so test the stream first.
+	if [ "$DECOMPRESS" = zstd ]; then
+		require_zstd "$(basename "$rootfs")" || drop_to_shell
+		if ! zstd -t "$rootfs" >/dev/null 2>&1; then
+			log "rootfs failed its zstd integrity test; refusing"
+			drop_to_shell
+		fi
+		log "rootfs zstd stream verified"
 	fi
 
 	# --- how the board was turned on (log only, never a gate) ---------------
@@ -833,12 +843,6 @@ flash_run() {
 		log "on_source: no rk809 at 0x20 on any i2c bus"
 	}
 	on_source
-
-	# --- presses ------------------------------------------------------------
-	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_FLASH_FORCE:-}"; then
-		log "press count not confirmed ($PRESSES required); not flashing"
-		drop_to_shell
-	fi
 
 	# --- plan ---------------------------------------------------------------
 	sectors=$(blockdev --getsz "$DISK" 2>/dev/null || echo 0)
@@ -958,11 +962,9 @@ flash_run() {
 	fi
 
 	# --- rootfs, boot tree, then the loader last ----------------------------
-	( while :; do
-		led_set "$LED_RED" 1; led_set "$LED_GREEN" 0; sleep 0.25
-		led_set "$LED_RED" 0; led_set "$LED_GREEN" 1; sleep 0.25
-	  done ) &
-	blinker=$!
+	# Steady red for the whole write sequence; green is reserved for the end.
+	led_set "$LED_RED" 1
+	led_set "$LED_GREEN" 0
 	log "writing rootfs to ${DISK}p4${DECOMPRESS:+ (zstd)}"
 	if [ -n "$DECOMPRESS" ]; then
 		zstd -dc "$rootfs" | dd of="${DISK}p4" bs=4M conv=fsync 2>/dev/null \
@@ -1023,9 +1025,6 @@ flash_run() {
 		log "keeping the vendor SPL already at LBA 0x40"
 	fi
 	sync
-	kill "$blinker" 2>/dev/null || true
-	wait "$blinker" 2>/dev/null || true
-	blinker=''
 	led_set "$LED_RED" 0
 	led_set "$LED_GREEN" 1
 	log "flash complete; rebooting.  Remove the card now: the card's loader is preferred while it is inserted."
@@ -1040,6 +1039,14 @@ flash_run() {
 # main: find and parse the card's t2-config.txt, then dispatch
 # ---------------------------------------------------------------------------
 mkdir -p "$TMP"
+
+# Own the power LEDs before the card is even scanned.  This board's gpio-leds
+# registers green "default-on", and the mmc-probe wait in config_dev can take
+# ~10 s, so without taking them over the board looks dead the whole time.
+# Red on from here is the "installer is working" indication; drop_to_shell
+# clears it again.
+led_claim
+led_set "$LED_RED" 1
 
 if [ -n "$CONFIG_DIR" ]; then
 	cfgdir=$CONFIG_DIR
@@ -1151,10 +1158,6 @@ if [ -n "$ipresses" ] && [ -n "$fpresses" ]; then
 	log "both install.presses and flash.presses are set; refusing to guess which flow is wanted"
 	drop_to_shell
 fi
-
-# Own the power LEDs from here on: the payload verify below can take ~20 s and
-# the kernel's green default would otherwise light the whole time.
-led_claim
 
 if [ -n "$ipresses" ]; then
 	arm_ok "$ipresses" "$iwindow" install || drop_to_shell
