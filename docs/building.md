@@ -18,6 +18,7 @@ Build on a Linux x86-64 host with about 40 GB free.  Install these packages
 | `python3`, `swig` | U-Boot `binman` and its `pylibfdt` module |
 | `python3-dev`, `python3-setuptools`, `python3-pyelftools` | U-Boot host tools |
 | `fakeroot`, `e2fsprogs` | build the rootfs ext4 image without root (`mke2fs`, `e2fsck`, `debugfs`) |
+| `kmod` | `depmod`, which `make modules_install` runs for the rootfs image (`modules.dep`) |
 | `zstd` | compressed kernel modules and the installer payload |
 | `dosfstools`, `mtools` | the FAT boot tree on the installer card (`mkfs.vfat`, `mcopy`) |
 | `curl`, `tar` | fetch and unpack the Ubuntu base tarball |
@@ -74,10 +75,12 @@ embedded initramfs is wrong.
 firmware.  `rootfs/initramfs/build.sh` builds the static busybox and the
 initramfs layout.  `kernel/build.sh` applies the five patches in
 `kernel/patches/`, copies `kernel/config/kernel.config`, runs `olddefconfig`,
-and builds `Image`, `dtbs`, and `modules`.  `u-boot/build.sh` builds two images
-from one board control: the plain image for the eMMC and the installer image for
-the card, each with its own `idbloader.img`.  `rootfs/build.sh` builds the
-rootfs ext4 image; `images/build-installer.sh` assembles the SD card image.
+and builds `Image`, `dtbs`, and `modules`; a tree that already carries all five
+patches is rebuilt as it is, so a re-run does not apply them twice.
+`u-boot/build.sh` builds two images from one board control: the plain image for
+the eMMC and the installer image for the card, each with its own
+`idbloader.img`.  `rootfs/build.sh` builds the rootfs ext4 image;
+`images/build-installer.sh` assembles the SD card image.
 
 All build output goes to `build/`, which git ignores.  Finished artefacts go to
 `build/out/`.

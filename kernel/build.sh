@@ -9,8 +9,10 @@
 #   4. make -jN Image dtbs modules
 #   5. install Image, rk3568-t2.dtb and the module tree into build/out/
 #
-# Run kernel/fetch.sh first. The script refuses to run when build/kernel is
-# missing or already carries the patches.
+# Run kernel/fetch.sh first.  The script refuses to run when build/kernel is
+# missing, or when it carries only some of the five patches.  A tree that
+# already carries all five is rebuilt as it is, so build-all.sh can re-run this
+# step after a failed or partial build.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -75,27 +77,40 @@ if [ ${#patches[@]} -eq 0 ]; then
     die "no patches found in $patchdir"
 fi
 
+# A tree that already carries every patch is not an error: build-all.sh re-runs
+# this script after a failed or partial build, and re-applying the patches would
+# fail.  A tree that carries only some of them is ambiguous, so it still stops.
+applied=0
 for p in "${patches[@]}"; do
     if git -C "$tree" apply --reverse --check "$p" >/dev/null 2>&1; then
-        die "patches already applied to $tree; remove the tree and re-run kernel/fetch.sh for a clean build"
+        applied=$((applied + 1))
     fi
 done
+if [ "$applied" -gt 0 ] && [ "$applied" -lt "${#patches[@]}" ]; then
+    die "$tree carries $applied of ${#patches[@]} patches; remove the tree and
+     re-run kernel/fetch.sh for a clean build"
+fi
 
 if [ -n "$CROSS_COMPILE" ] && ! command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
     die "${CROSS_COMPILE}gcc not found; install the $ARCH cross toolchain or set CROSS_COMPILE"
 fi
 
 # --- 1. apply patches ------------------------------------------------------
-echo "== applying ${#patches[@]} patches =="
-git_flags=()
-git -C "$tree" config user.email >/dev/null 2>&1 || git_flags+=(-c user.email=zspace-t2@localhost)
-git -C "$tree" config user.name  >/dev/null 2>&1 || git_flags+=(-c user.name="ZSpace T2 build")
-if ! git -C "$tree" "${git_flags[@]}" am "${patches[@]}"; then
-    echo "error: git am failed. Inspect build/kernel and run" >&2
-    echo "       'git -C build/kernel am --abort' to reset." >&2
-    exit 1
+if [ "$applied" -eq "${#patches[@]}" ]; then
+    echo "== the ${#patches[@]} patches are already applied to $tree; rebuilding them as they are =="
+    echo "  $(git -C "$tree" log --oneline -"${#patches[@]}" | wc -l) commits in place"
+else
+    echo "== applying ${#patches[@]} patches =="
+    git_flags=()
+    git -C "$tree" config user.email >/dev/null 2>&1 || git_flags+=(-c user.email=zspace-t2@localhost)
+    git -C "$tree" config user.name  >/dev/null 2>&1 || git_flags+=(-c user.name="ZSpace T2 build")
+    if ! git -C "$tree" "${git_flags[@]}" am "${patches[@]}"; then
+        echo "error: git am failed. Inspect build/kernel and run" >&2
+        echo "       'git -C build/kernel am --abort' to reset." >&2
+        exit 1
+    fi
+    echo "  $(git -C "$tree" log --oneline -"${#patches[@]}" | wc -l) commits applied"
 fi
-echo "  $(git -C "$tree" log --oneline -"${#patches[@]}" | wc -l) commits applied"
 
 # --- 2. install the curated config ----------------------------------------
 echo "== kernel config =="

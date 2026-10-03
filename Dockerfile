@@ -9,6 +9,11 @@
 #   * Ubuntu 24.04 is what the package list was written against.  Its
 #     gcc-aarch64-linux-gnu is gcc 13 and installs headers and libraries under
 #     /usr/aarch64-linux-gnu, which rootfs/initramfs/build.sh expects.
+#   * libc6-dev-arm64-cross and linux-libc-dev-arm64-cross are named explicitly:
+#     they are only Recommends of gcc-aarch64-linux-gnu, and
+#     --no-install-recommends would drop them.  Without the target headers the
+#     cross gcc falls back to the host /usr/include and BusyBox fails on
+#     bits/libc-header-start.h.
 #   * The apt lists stay in the image on purpose: rootfs/t2-distro.py fetches
 #     qemu-user-static with `apt-get download` and unpacks it with dpkg-deb,
 #     which needs no root and no binfmt_misc.  It resolves the version from
@@ -26,10 +31,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential make git ca-certificates \
-        gcc-aarch64-linux-gnu \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
         bc bison flex libssl-dev device-tree-compiler \
         python3 python3-dev python3-setuptools python3-pyelftools swig \
-        fakeroot e2fsprogs zstd dosfstools mtools util-linux \
+        fakeroot e2fsprogs zstd dosfstools mtools util-linux kmod \
         curl tar bzip2 \
     && apt-get clean
 

@@ -84,9 +84,13 @@ QEMU_BIN = "usr/bin/qemu-aarch64-static"
 # reports the host's inode, and every file the build creates is
 # unreachable afterwards - which is also why apt's InRelease signature
 # check fails with a gpg keydb EACCES).  The upstream static build
-# translates correctly, so it is pinned here by sha256 instead.
+# translates correctly, so it is pinned here by sha256 instead - upstream
+# replaces that file in place, so the pin has to be refreshed when the
+# download no longer matches (the build served since 2026-10-02 is
+# v5.4.1-32-g25dc6a3).  probe_chroot() below is what actually guards the path
+# translation; this pin only records which binary was measured.
 PROOT_URL = "https://proot.gitlab.io/proot/bin/proot"
-PROOT_SHA256 = "3f48a11a7ae3bfdc63a61f9ccc309cda4c4e833bdc14c479e7201fc35f6f312a"
+PROOT_SHA256 = "90375de3807212b8f948ff98ed66020f7c9cf7ea447c8734f1af02a2643c8d26"
 
 # Inside the chroot.  The base tarball ships no /etc/resolv.conf at all, so
 # without this bind apt cannot resolve archive.ubuntu.com; the bind is
