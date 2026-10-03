@@ -5,9 +5,9 @@
 # AMPak ship - it is NOT in linux-firmware.  brcmfmac needs the .bin (mandatory)
 # plus .txt; the .clm_blob is optional.  The module probes at ~7 s, before
 # switch_root, so the same files must also live in the kernel's embedded
-# initramfs (workbench/initramfs-bringup/) - this hook only covers the rootfs.
+# initramfs (rootfs/initramfs/) - this hook only covers the rootfs.
 #
-# Firmware provenance (notes/distro-image.md, patches/README.md):
+# Firmware provenance (patches/README.md):
 #   fw_bcm43752a2_pcie_ag.bin -> brcmfmac43752-pcie.bin
 #   nvram_AP6275P.txt         -> brcmfmac43752-pcie.txt
 #   clm_bcm43752a2_ag.blob    -> brcmfmac43752-pcie.clm_blob

@@ -52,7 +52,7 @@ log() { echo "zspace-dump: $*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 need_root() {
-	# ZSPACE_ASSUME_ROOT=1 exists so the fixture in workbench/ can exercise this
+	# ZSPACE_ASSUME_ROOT=1 exists so the local test fixture can exercise this
 	# script without privileges; nothing here writes, so it is not a real risk.
 	[ "$(id -u)" = "0" ] || [ "${ZSPACE_ASSUME_ROOT:-0}" = "1" ] ||
 		die "must run as root (needs raw device access)"

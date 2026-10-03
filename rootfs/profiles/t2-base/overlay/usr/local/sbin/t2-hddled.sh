@@ -2,8 +2,8 @@
 # t2-hddled: per-bay drive LEDs on the ZSpace T2.
 #
 # Adapted from the Q2C fnOS board patch (`q2c-hddled.py`, recovered from
-# q2c_fnOS_1.2.0302.img.xz - see notes/q2c-userspace-survey.md).  Kernel LED
-# triggers cannot express per-bay or fault semantics: the running kernel offers
+# q2c_fnOS_1.2.0302.img.xz).  Kernel LED triggers cannot express per-bay or
+# fault semantics: the running kernel offers
 # `disk-activity`/`disk-read`/`disk-write` (global: any block device) and
 # `mmc0`/`mmc1` (per MMC controller), but mainline 7.3 has no per-block-device
 # trigger (`ledtrig-blkdev` is not in drivers/leds/trigger/).  So this is

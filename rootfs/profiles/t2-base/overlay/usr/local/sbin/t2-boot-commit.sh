@@ -1,9 +1,9 @@
 #!/bin/sh
 # ZSpace T2: commit a boot that reached userspace (the userspace half of the
-# kernel A/B fallback of notes/kernel-updates.md section 4).
+# kernel A/B fallback).
 #
 # U-Boot counts boots in its persistent environment (board defconfig
-# workbench/uboot-rk3568/uboot/configs/t2-rk3568_defconfig):
+# u-boot/configs/t2-rk3568_defconfig):
 #
 #   * a freshly written kernel is armed with `upgrade_available=1`,
 #     `bootcount=0`;

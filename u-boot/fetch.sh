@@ -4,7 +4,7 @@
 #   build/rkbin  - rockchip-linux/rkbin, sparse, only bin/rk35
 #
 # The rkbin tree supplies the two closed-source blobs binman must pack into the
-# FIT and the idbloader (see notes/uboot-mainline-t2.md section 2):
+# FIT and the idbloader:
 #   rk3568_bl31_v1.46.elf        BL31 (ATF: PSCI secure monitor)
 #   rk3568_ddr_1560MHz_v1.26.bin  TPL (SRAM DDR init/training; RK3568 U-Boot
 #                                  does not init DRAM itself)
@@ -22,8 +22,8 @@ RKBIN_SRC=${RKBIN_SRC:-$BUILD/rkbin}
 UBOOT_REPO=${UBOOT_REPO:-https://github.com/u-boot/u-boot.git}
 UBOOT_TAG=${UBOOT_TAG:-v2026.07}
 RKBIN_REPO=${RKBIN_REPO:-https://github.com/rockchip-linux/rkbin.git}
-# Pinned rkbin revision: the blob versions notes/uboot-mainline-t2.md section 2
-# measured.  rkbin's default branch HEAD is this commit today.
+# Pinned rkbin revision: the blob versions measured.  rkbin's default branch
+# HEAD is this commit today.
 RKBIN_REF=${RKBIN_REF:-3e288fe814e059dd06833495f845cab04ac20a5c}
 
 usage() {

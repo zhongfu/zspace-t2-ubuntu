@@ -4,7 +4,7 @@
 # The four hdd* LEDs are owned by t2-hddled (per-bay present/activity/fault) -
 # this script must not touch them, or the two owners fight over the same
 # /sys/class/leds entries (exactly the bug the Q2C fnOS board patch works
-# around; notes/q2c-userspace-survey.md).
+# around).
 #
 # Vendor semantics: power green = steady on, power red = fault indication.
 # A real fault policy needs userspace knowledge of the system state, which

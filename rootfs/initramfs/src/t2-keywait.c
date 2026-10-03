@@ -27,7 +27,7 @@
 // Exit codes: 0 = COUNT reached, 1 = fewer than COUNT when the window expired /
 //             no device, 2 = bad usage, 3 = no matching device, 4 = grab failed.
 //
-// Build (static, aarch64; see the header of workbench/initramfs-bringup/init):
+// Build (static, aarch64; see the header of rootfs/initramfs/init):
 //   LD_LIBRARY_PATH=<cross>/usr/lib/x86_64-linux-gnu \
 //   <cross>/usr/bin/aarch64-linux-gnu-gcc \
 //       -isystem /usr/aarch64-linux-gnu/include \

@@ -203,6 +203,6 @@ CONFIG_PHY_ROCKCHIP_NANENG_COMBOPHY=y
 CONFIG_USB_FUNCTION_ROCKUSB=y
 # CONFIG_USB_FUNCTION_FASTBOOT is not set
 CONFIG_FASTBOOT_BUF_ADDR=0xc00800
-# Host-only build fix (notes/uboot-mainline-t2.md section 3.2): the ef capsuler
-# tool needs EFI/OpenSSL bits we do not build on this host.
+# Host-only build fix: the ef capsuler tool needs EFI/OpenSSL bits we do not
+# build on this host.
 # CONFIG_TOOLS_MKEFICAPSULE is not set

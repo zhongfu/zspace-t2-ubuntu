@@ -17,8 +17,8 @@ and lays the pieces down at the same offsets the vendor loader expects on eMMC:
 
 Why mirror the vendor geometry instead of inventing one: the vendor SPL/U-Boot
 reads the loader from LBA 0x40 and its FIT from p1, and the vendor environment
-booting the *boot* partition - `notes/uboot-mainline-t2.md` section 5 measured all
-of it on the device.  Keeping the same names, type GUIDs and PARTUUIDs (the
+booting the *boot* partition - all of it measured on the device.  Keeping the
+same names, type GUIDs and PARTUUIDs (the
 device's own GPT, embedded in `VENDOR_TABLE` below) means the card is laid out
 exactly like the eMMC, so the loader that already works on eMMC has the same
 numbers to find.
@@ -583,11 +583,11 @@ def main() -> int:
     ap.add_argument("--no-idbloader", action="store_true",
                     help="write u-boot.itb but not idbloader: the BootROM falls "
                          "back to the eMMC SPL, which then loads U-Boot from the "
-                         "card -- the loader-acceptance test (notes/distro-image.md 4.6)")
+                         "card -- the loader-acceptance test")
     ap.add_argument("--config", type=Path,
                     help=f"file to carry on the {CONFIG_LABEL} FAT partition as "
                          f"/{CONFIG_FILE} (the out-of-band config the image "
-                         f"reads on boot; notes/distro-image.md section 5)")
+                         f"reads on boot")
     ap.add_argument("--boot-dir", type=Path,
                     help="directory copied to the root of the same FAT "
                          "partition (the boot tree as files: Image, dtb, "
@@ -604,8 +604,7 @@ def main() -> int:
     ap.add_argument("--payload-dir", type=Path,
                     help=f"directory copied to the root of a {PAYLOAD_LABEL} "
                          f"ext4 partition: the payload the installer reads off "
-                         f"the card (the rootfs image as /rootfs.ext4.zst, "
-                         f"notes/distro-image.md 4.7)")
+                         f"the card (the rootfs image as /rootfs.ext4.zst)")
     ap.add_argument("--payload-size", default="auto",
                     help=f"size of that partition (default: the directory "
                          f"contents plus {human(PAYLOAD_SLACK)})")

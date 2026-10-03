@@ -103,7 +103,7 @@ fi
 # ---------------------------------------------------------------------- build
 # The cross gcc defaults its sysroot to / on some distributions, so route the
 # arm64 libc headers and libraries explicitly - the same flags the original
-# recipe used (notes/mainline-7.3-build.md).
+# recipe used.
 extra_cflags=""
 extra_ldflags=""
 if [ -d /usr/aarch64-linux-gnu/include ]; then

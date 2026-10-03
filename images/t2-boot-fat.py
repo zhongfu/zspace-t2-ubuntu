@@ -34,22 +34,20 @@ Contents (exactly these, nothing else):
     /Image.old                 (only with --fallback-image)
     /uboot.env                 (only with --fallback-image)
 
-`--fallback-image <path>` adds the A/B fallback of notes/kernel-updates.md
-section 4: it copies the previous kernel to `/Image.old` and adds the fallback
-extlinux label (`t2-emmc-old`) that boots it with the same cmdline.  The
-primary entry (`t2-emmc`, `/Image`) stays the `default`, so U-Boot's normal
-bootstd scan is unchanged; only when the boot counter exceeds `bootlimit`
+`--fallback-image <path>` adds the A/B fallback: it copies the previous kernel
+to `/Image.old` and adds the fallback extlinux label (`t2-emmc-old`) that
+boots it with the same cmdline.  The primary entry (`t2-emmc`, `/Image`)
+stays the `default`, so U-Boot's normal bootstd scan is unchanged; only when
+the boot counter exceeds `bootlimit`
 does U-Boot run `altbootcmd`, which loads `/Image.old` directly (env defaults
-compiled into the board defconfig
-`workbench/uboot-rk3568/uboot/configs/t2-rk3568_defconfig`).  The option is
-opt-in: without it the image is byte-for-byte the three-file tree it always
-was.
+compiled into the board defconfig (`u-boot/configs/t2-rk3568_defconfig`).  The
+option is opt-in: without it the image is byte-for-byte the three-file tree it
+always was.
 
 The default `--append` is the defect-D1-safe spelling: `root=LABEL=zspace-rootfs`,
 never the short `PARTUUID=` form.  A short PARTUUID was measured to resolve to
-the *wrong* device (`notes/distro-image.md` section 2.3/D1, and section 4.5 for
-why the label is the only spelling that names one partition when the card and
-the eMMC carry the same PARTUUID).
+the *wrong* device; the label is the only spelling that names one partition
+when the card and the eMMC carry the same PARTUUID).
 
 The image is written with mtools (mformat/mmd/mcopy) and then verified by
 reading it back with the same tools, so a file that does not survive VFAT - or a
@@ -135,8 +133,8 @@ CONF_LABEL = "t2-emmc"
 # the card's extlinux.conf can make it the `default`.
 FLASH_LABEL = "t2-installer"
 # The A/B fallback entry and file: the previous kernel, kept next to the new
-# one so U-Boot's altbootcmd can boot it when the boot counter is exceeded
-# (notes/kernel-updates.md section 4).  See --fallback-image.
+# one so U-Boot's altbootcmd can boot it when the boot counter is exceeded.
+# See --fallback-image.
 FALLBACK_LABEL = "t2-emmc-old"
 FALLBACK_KERNEL_NAME = "Image.old"
 CONF_DIR = "extlinux"
@@ -153,7 +151,7 @@ KERNEL_NAME = "Image"
 # board) followed by the NUL-separated `key=value` list, padded to
 # CONFIG_ENV_SIZE; `env_fat_save()` writes exactly `sizeof(env_t)` bytes
 # (env/fat.c:76-85, `env_export()` in env/common.c).  `ENV_SIZE` here is
-# CONFIG_ENV_SIZE from workbench/uboot-rk3568/uboot/configs/t2-rk3568_defconfig.
+# CONFIG_ENV_SIZE from `u-boot/configs/t2-rk3568_defconfig`.
 ENV_NAME = "uboot.env"
 ENV_SIZE = 0x1f000
 ENV_DATA_SIZE = ENV_SIZE - 4
@@ -165,7 +163,7 @@ ENV_DEFAULTS = REPO / "build" / "out" / "u-boot-initial-env"
 # `rootflags=` carries the root mount options: the distro's /etc/fstab
 # deliberately does not name the root device at all (the installer repartitions
 # the eMMC, so a baked PARTUUID would be stale), and the initramfs passes this
-# through to the mount it performs (workbench/initramfs-bringup/init).
+# through to the mount it performs (rootfs/initramfs/init).
 DEFAULT_APPEND = ("root=LABEL=zspace-rootfs rootfstype=ext4 rw rootwait "
                   "rootflags=errors=remount-ro panic=15")
 # The flash entry deliberately carries no root= at all: /init sees
@@ -177,7 +175,7 @@ DEFAULT_FLASH_APPEND = "t2.mode=flash"
 # artifact to fill a fixed-size partition passes --size.
 SLACK = 8 << 20
 # FAT stops at 4 GiB - 1 (that is also why the card's payload partition is ext4
-# and not FAT; notes/distro-image.md section 4.7).
+# and not FAT).
 FAT32_LIMIT = (4 << 30) - 1
 LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,11}\Z")
 

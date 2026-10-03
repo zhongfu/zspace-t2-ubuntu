@@ -14,7 +14,7 @@
 # device, its GPT head/tail, every partition, and any SPI-NOR MTD partitions.
 # NVMe user-data disks are listed but never dumped unless --include-nvme.
 #
-# --local runs the same flow without ssh, against the fake tree in workbench/,
+# --local runs the same flow without ssh, against a local fake tree,
 # which is how this script is tested.
 
 set -uo pipefail

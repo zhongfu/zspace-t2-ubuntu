@@ -3,8 +3,7 @@ SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # ZSpace T2: apply the out-of-band configuration on boot (P3 provisioning).
 #
 # Source of truth: a FAT partition labelled `t2-config` (the distribution image
-# can carry one - see `notes/distro-image.md` section 5) holding
-# `t2-config.txt`, a flat key=value list:
+# can carry one) holding `t2-config.txt`, a flat key=value list:
 #
 #     hostname=t2
 #     wifi.ssid=MyNet
@@ -43,7 +42,7 @@ ROOT=${T2_PROVISION_ROOT:-/}
 CONFIG_DIR=${T2_CONFIG_DIR:-}
 # The distribution images label the config partition `T2-CONFIG` (uppercase on
 # purpose: they are meant to be written from Windows/macOS, where lowercase VFAT
-# labels misbehave), while the prose in notes/distro-image.md said `t2-config`.
+# labels misbehave), while `t2-config` was only ever the documented spelling.
 # Accept both, in that order: blkid label matching is case-sensitive, and a
 # board that boots with the wrong one silently provisions nothing (measured
 # 2026-10-01 on the install card: log said "no 't2-config' partition" while

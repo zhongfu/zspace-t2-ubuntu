@@ -3,9 +3,9 @@
 #
 # U-Boot counts boots in its persistent environment (`CONFIG_BOOTCOUNT_LIMIT` +
 # `CONFIG_BOOTCOUNT_ENV`, board defconfig
-# workbench/uboot-rk3568/uboot/configs/t2-rk3568_defconfig): a freshly written
-# kernel is armed with `upgrade_available=1` and `bootcount=0`, every boot then
-# increments `bootcount`, and once `bootcount > bootlimit` (3) U-Boot runs
+# u-boot/configs/t2-rk3568_defconfig): a freshly written kernel is armed with
+# `upgrade_available=1` and `bootcount=0`, every boot then increments
+# `bootcount`, and once `bootcount > bootlimit` (3) U-Boot runs
 # `altbootcmd` and boots the previous kernel `/Image.old` instead of `/Image`.
 # Nothing in the kernel ever clears that counter, so this unit closes the loop:
 # once the boot has clearly *worked* (it runs after multi-user.target), it

@@ -1227,8 +1227,7 @@ def stage_verify(args, prof: Profile, stage: Path, img: Path,
     # empty regular file (what ubuntu-base ships) passes any "exists" check but
     # leaves the board with no nameserver at all - measured 2026-09-30.
     # The FIT is a separate artifact with its own stale-input failure mode:
-    # a stale one boots the wrong partition while every check here passes (D1,
-    # notes/distro-image.md §2.3).
+    # a stale one boots the wrong partition while every check here passes.
     if getattr(args, "no_fit_check", False):
         log('  [skip] --no-fit-check: the FIT is built later by images/')
     else:

@@ -59,8 +59,8 @@ flash.decompress=zstd
 #flash.tree=/run/t2-installer-config
 flash.uboot=u-boot.itb
 # `none` keeps the vendor SPL already at LBA 0x40 in the eMMC, which is the
-# default plan until the loader-acceptance test (notes/distro-image.md 4.6)
-# shows the vendor SPL loads our u-boot.itb.  Set flash.idbloader=idbloader.img
+# default plan until the loader-acceptance test shows the vendor SPL loads our
+# u-boot.itb.  Set flash.idbloader=idbloader.img
 # to write our own SPL pair as well - build-installer.sh copies idbloader.img
 # into the tree, so this is what the published card does.
 flash.idbloader=idbloader.img
