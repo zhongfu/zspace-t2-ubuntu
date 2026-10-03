@@ -46,7 +46,8 @@ Options:
   --no-zstd                do not write build/out/rootfs.ext4.zst
   --rebuild-initramfs      rebuild build/initramfs even when it exists
   --no-fit-check           skip the boot-FIT freshness check (automatic when
-                           build/out/t2-mainline-boot.img does not exist)
+                           build/out/t2-mainline-boot.img does not exist; a
+                           stale one is refreshed first)
   --firmware-from-host H   fetch missing firmware from a T2 over SSH
   --firmware-ota URL       fetch missing firmware from a .zspace OTA package
   --firmware-from-dir DIR  fetch missing firmware from a local directory
@@ -141,6 +142,22 @@ if [ "$no_fit_check" = 1 ]; then
 elif [ ! -f "$fit" ]; then
     t2_args+=(--no-fit-check)
     echo "note: $fit is absent (images/ builds it later); skipping the FIT check"
+elif [ "$kernel_tree/arch/arm64/boot/Image" -nt "$fit" ] \
+     || [ "$kernel_tree/arch/arm64/boot/dts/rockchip/rk3568-t2.dtb" -nt "$fit" ]; then
+    # A re-run after a kernel change lands here, and the freshness check below
+    # would then fail this build over the FIT - which this step does not even
+    # ship, and which images/ refills in step 8 regardless.  Refresh it from the
+    # same sources the check compares against, so the two agree; a FIT that is
+    # newer but built from a different kernel still fails the check.
+    if [ "$dry" = 1 ]; then
+        echo "[dry] would refresh the stale $fit"
+    else
+        echo "== refreshing $fit (stale: the kernel tree is newer) =="
+        python3 "$repo/images/rk-fit.py" \
+            --kernel "$kernel_tree/arch/arm64/boot/Image" \
+            --dtb "$kernel_tree/arch/arm64/boot/dts/rockchip/rk3568-t2.dtb" \
+            --out "$fit"
+    fi
 fi
 [ "$dry" = 1 ] && t2_args+=(--dry-run)
 
