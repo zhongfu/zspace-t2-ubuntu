@@ -55,3 +55,12 @@ rootfs logs in as `root` / `t2`.  Adapter and cabling details are in
 | `zspace-dump.sh` | device-side read-only dumper: device/partition reports and raw byte ranges |
 | `rk-extract.py` | take a dump apart: GPT, containers and device trees, written under `--out` |
 | `rkimg.py` (in `lib/`) | shared Rockchip parser module; run `python3 lib/rkimg.py image` to identify one |
+
+## Releasing
+
+CI runs these from `.github/workflows/`.  `docs/releasing.md` explains the flow.
+
+| Tool | One line |
+|---|---|
+| `collect-release-artifacts.sh` | copy a finished `build/out/` into the release files, find the `t2-utils` `.deb` by glob, write `SHA256SUMS` and the notes file list |
+| `ci-fetch-firmware.sh` | download the vendor firmware archive from `T2_FIRMWARE_URL` and install it with `rootfs/fetch.sh --from-dir` |

@@ -1,0 +1,58 @@
+name: Build
+
+# Build the fast subset on pull requests and branch pushes, so breakage shows
+# up before a release.  No artefacts are kept: release.yml does that on a tag.
+#
+# The subset is initramfs + kernel tree + kernel + U-Boot (build-all.sh steps
+# 2..6).  It skips the rootfs and the installer image, which are the slowest
+# and need the most network.  When no firmware source is configured (a pull
+# request from a fork cannot read secrets), the firmware-dependent steps are
+# skipped and only U-Boot is built.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Fetch the vendor WiFi/BT firmware when configured
+        id: firmware
+        env:
+          T2_FIRMWARE_URL: ${{ secrets.T2_FIRMWARE_URL }}
+          T2_FIRMWARE_SHA256: ${{ secrets.T2_FIRMWARE_SHA256 }}
+        run: |
+          if [ -z "${T2_FIRMWARE_URL:-}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::T2_FIRMWARE_URL is not set, so the firmware-dependent steps are skipped; building U-Boot only."
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          tools/ci-fetch-firmware.sh
+
+      - name: Build the fast subset
+        run: |
+          if [ "${{ steps.firmware.outputs.available }}" = true ]; then
+            ./docker-build.sh ./build-all.sh --from 2 --to 6
+          else
+            ./docker-build.sh ./build-all.sh --only 5,6
+          fi

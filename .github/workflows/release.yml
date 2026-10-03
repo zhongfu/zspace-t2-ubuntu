@@ -1,0 +1,146 @@
+name: Release
+
+# On a v* tag: build the artefacts in the Docker build image, keep them as a
+# workflow artefact, and publish them on a GitHub release.  The release notes
+# are a changelog (git log since the previous tag) followed by an explanation
+# of every file.  docs/releasing.md has the full flow.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          tag=${INPUT_TAG:-}
+          [ -n "$tag" ] || tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v*) ;;
+            *) echo "error: '$tag' is not a v* tag" >&2; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "building $tag at $(git rev-parse --short HEAD)"
+
+      - name: Free disk space
+        # The build wants about 40 GB (docs/building.md) and the runner ships
+        # with far less free.  Remove toolchains this build never uses.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Fetch the vendor WiFi/BT firmware
+        # The AP6275P firmware is vendor firmware and is not redistributable,
+        # so it is not in the repository.  A secret supplies it out of band;
+        # the artefacts embed it and the release notes flag the licence.
+        env:
+          T2_FIRMWARE_URL: ${{ secrets.T2_FIRMWARE_URL }}
+          T2_FIRMWARE_SHA256: ${{ secrets.T2_FIRMWARE_SHA256 }}
+        run: tools/ci-fetch-firmware.sh
+
+      - name: Build every artefact
+        run: ./docker-build.sh
+
+      - name: Collect the release assets
+        run: ./docker-build.sh tools/collect-release-artifacts.sh --notes dist/release-files.md
+
+      - name: Upload the assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Download the assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Build the release notes
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -eu
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)
+          {
+            echo "## What changed"
+            echo
+            if [ -n "$prev" ]; then
+              echo "Changes since \`$prev\`:"
+              echo
+              git log --no-merges --pretty='* %s (%h)' "$prev..$TAG"
+            else
+              echo "Changes up to \`$TAG\`:"
+              echo
+              git log --no-merges --pretty='* %s (%h)' "$TAG"
+            fi
+            echo
+            echo "## How to install"
+            echo
+            echo "Write \`installer.img\` to an SD card and boot the board.  The installer writes the system to the eMMC."
+            echo
+            echo "See \`docs/using.md\` for the install steps."
+            echo
+            cat dist/release-files.md
+            echo
+            echo "## Firmware licence"
+            echo
+            echo "The images embed the AP6275P WiFi and Bluetooth firmware.  That firmware comes from the vendor and is **not redistributable**; it is not in this repository.  The build fetched it from a vendor source, and the artefacts here embed it.  Anyone who reuses these artefacts must respect the vendor's terms."
+          } > dist/release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A re-run of a failed job: refresh the files and the notes.
+            gh release upload "$TAG" dist/release/* --clobber
+            gh release edit "$TAG" --notes-file dist/release-notes.md
+          else
+            gh release create "$TAG" dist/release/* \
+              --title "$TAG" --notes-file dist/release-notes.md --verify-tag
+          fi
+          echo "published $TAG:"
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
