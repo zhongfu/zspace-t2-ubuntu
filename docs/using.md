@@ -17,27 +17,51 @@ sync
 Then:
 
 1. Insert the card into the SD slot.
-2. Power the board on while you **hold the power button**.  U-Boot samples the
-   power button twice, 0.4 s apart, and boots the card's installer tree when it
-   is held; otherwise it boots the eMMC.  U-Boot lights the red power LED when
-   it selects the installer.
-3. The installer card's `T2-CONFIG` partition carries `flash.presses=` and
+2. Power the board up.  A plug-in power-on is deliberately *not* an autoboot:
+   U-Boot reads the PMIC's power-on source, sees external power rather than the
+   power button, and shuts the board back off (nothing lights up; the console
+   prints `T2 power-on: pmic=0x40+0x0 reset-cause=0x0` and then
+   `T2 powered on by plug-in - powering off`).  Wait until it is off again -
+   about a second - then **press and hold the power button**.  The board only
+   autoboots on a button press, and U-Boot lights the red power LED as soon as
+   it runs, about a second after the press.
+3. Keep holding.  After its 1 s autoboot countdown U-Boot samples the power
+   button twice, 0.4 s apart; held at both samples it selects the card's
+   installer tree (`T2: installer: booting the SD card` on the console) and
+   leaves the red LED lit.  A tap, or no press at all, boots the eMMC instead
+   (U-Boot switches the LED to green).  U-Boot never blinks - every LED state
+   above is steady.  Holding on past this point is harmless: a press that began
+   before the power-button daemon opened its input device is never counted, so
+   a hold that started at power-on cannot power the board off again.
+4. The kernel's LED driver briefly lights green (its device-tree default) until
+   the installer takes the LEDs over; red on from there means "installer
+   running".
+5. The installer card's `T2-CONFIG` partition carries `flash.presses=` and
    `flash.window=`.  The shipped example uses **10 presses within 60 s**.  Press
    the power button that many times inside the window.
 
-The installer asks for the presses **before** it verifies the payload, so you do
-not sit through the sha256/zstd check first.  The red power LED is lit from the
-moment the installer starts - a working board never looks dead - and it shows
-the count: 1.0 s on / 1.0 s off before the first press, then 0.1 s shorter
-after every counted press (press 1 -> 0.9 s, press 9 -> 0.1 s).  At the target
-count the red LED goes solid for 5 s and stays solid through the payload
-verification and the write; green is steady when the write is done.
+The installer asks for the presses **before** it verifies the payload, and
+verifies it *while* you press - the sha256/zstd pass runs in the background as
+soon as the window opens, so nothing is waited out afterwards.  The red power
+LED is lit from the moment the installer starts - a working board never looks
+dead - and it shows the count: 1.0 s on / 1.0 s off before the first press, then
+0.1 s shorter after every counted press (press 1 -> 0.9 s, press 9 -> 0.1 s).  At
+the target count the red LED goes solid for 5 s and stays solid while the
+payload verification is joined.  Every sector written after that alternates red
+and green at about 2 Hz - **do not cut power while it alternates** - and green
+is steady once the last sync has returned.
+
+If the run stops without finishing - the card was not armed, the count was
+missed, the payload was refused, or a write failed - the installer drops to its
+recovery shell and the power LED blinks **two short red flashes, then a pause**,
+repeating, so a failed board is never left dark.  A deliberate stop (a dry run)
+ends the same way.
 
 The installer repartitions the eMMC, formats the boot partition, writes the
-rootfs, and writes the loader.  **Do not remove power during the write.**  If
-you miss the window, or press the wrong number of times, the installer writes
-nothing and drops to its recovery shell on the serial console, telnet, and the
-USB gadget.
+rootfs, and writes the loader.  **Do not remove power while the LED alternates
+red and green.**  If you miss the window, or press the wrong number of times,
+the installer writes nothing and drops to its recovery shell on the serial
+console, telnet, and the USB gadget.
 
 > A one-partition card variant uses `install.presses=` and `install.window=` and
 > writes a single partition instead.  The image tools no longer build that card,

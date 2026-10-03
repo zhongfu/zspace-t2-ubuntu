@@ -34,11 +34,17 @@
 # it.  Omit it (or miss the window) and the installer drops to its recovery
 # shell instead.  The red power LED is lit from the moment the installer starts
 # (a working board never looks dead) and the presses are asked for *before* the
-# payload verification, so nothing has to be waited out first.  LED feedback:
+# payload verification - which then runs in the background *while* the presses
+# are counted, so nothing has to be waited out first.  LED feedback:
 # the red power LED blinks 1.0 s on / 1.0 s off before the first press, then
 # 0.1 s shorter after every counted press (press 1 -> 0.9/0.9, ..., press 9 ->
 # 0.1/0.1).  At the target (press 10) the red LED goes solid for 5 s and stays
-# solid through the verification and the write, until green is steady.
+# solid through the payload verification.  Every sector written after that
+# alternates red/green at ~2 Hz - do not cut power while it alternates - and
+# green is steady once the last sync has returned.  If the run stops without
+# finishing (card not armed, count missed, payload refused, write failed) the
+# board drops to the recovery shell and blinks two short red flashes then a
+# pause, repeating, so a failed board is never left dark.
 flash.presses=10
 flash.window=60
 # The PMIC power button.  The kernel builds the driver in
