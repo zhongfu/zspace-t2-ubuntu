@@ -1,16 +1,20 @@
 name: Release
 
-# On a v* tag: build the artefacts in the Docker build image, keep them as a
-# workflow artefact, and publish them on a GitHub release.  The release notes
-# are a changelog (git log since the previous tag) followed by an explanation
-# of every file.  docs/releasing.md has the full flow.
+# On a date tag (YYYYMMDD): build the artefacts in the Docker build image, keep
+# them as a workflow artefact, and publish them on a GitHub release.  The
+# release notes are a changelog (git log since the previous tag) followed by an
+# explanation of every file.  docs/releasing.md has the full flow.
+#
+# GitHub matches tags with globs, not regular expressions (workflow syntax,
+# "Patterns to match branches and tags"): [0-9] is a character class, and the
+# trailing * lets a same-day re-release add a counter, 20261004.1.
 on:
   push:
-    tags: ['v*']
+    tags: ['[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v* tag to build and publish
+        description: Existing date tag (YYYYMMDD) to build and publish
         required: true
         type: string
 
@@ -46,8 +50,8 @@ jobs:
           tag=${INPUT_TAG:-}
           [ -n "$tag" ] || tag="${GITHUB_REF_NAME}"
           case "$tag" in
-            v*) ;;
-            *) echo "error: '$tag' is not a v* tag" >&2; exit 1 ;;
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+            *) echo "error: '$tag' is not a YYYYMMDD tag" >&2; exit 1 ;;
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "building $tag at $(git rev-parse --short HEAD)"
@@ -95,7 +99,9 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -eu
-          prev=$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)
+          prev=$(git describe --tags --abbrev=0 \
+                   --match '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*' \
+                   "${TAG}^" 2>/dev/null || true)
           {
             echo "## What changed"
             echo

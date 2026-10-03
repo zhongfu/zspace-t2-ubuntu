@@ -4,8 +4,8 @@ A release carries the installer SD-card image, the individual build
 components, and the `t2-utils` package.  Two GitHub Actions workflows do the
 work:
 
-* `.github/workflows/release.yml` runs on a `v*` tag.  It builds every
-  artefact, then publishes a GitHub release.
+* `.github/workflows/release.yml` runs on a date tag (`YYYYMMDD`).  It builds
+  every artefact, then publishes a GitHub release.
 * `.github/workflows/build.yml` runs on pull requests and branch pushes.  It
   builds the boot chain (`build-all.sh` steps 1 to 6: the vendor firmware, the
   initramfs, the kernel and U-Boot), keeps no artefacts, and skips the rootfs
@@ -36,12 +36,14 @@ needed.
 ## Make a release
 
 1. Confirm the branch is green in the **Build** workflow.
-2. Pick the version, for example `v26.04.1`.
+2. Tag the release with its date, `YYYYMMDD` (`20261004`).  A second release the
+   same day adds a counter: `20261004.1`.  The workflow matches tags that start
+   with eight digits - GitHub's tag filters are globs, not regular expressions.
 3. Create an annotated tag and push it:
 
 ```sh
-git tag -a v26.04.1 -m "ZSpace T2 26.04.1"
-git push origin v26.04.1
+git tag -a 20261004 -m "ZSpace T2 20261004"
+git push origin 20261004
 ```
 
 The tag starts the **Release** workflow.  It:
@@ -121,13 +123,13 @@ rootfs/fetch.sh
 4. Make the notes from the changelog and the file list:
 
 ```sh
-git log --no-merges --pretty='* %s (%h)' v26.04.0..v26.04.1 > dist/changelog.md
+git log --no-merges --pretty='* %s (%h)' 20261001..20261004 > dist/changelog.md
 cat dist/changelog.md dist/release-files.md > dist/release-notes.md
 ```
 
 5. Create the release (requires the `gh` GitHub CLI):
 
 ```sh
-gh release create v26.04.1 dist/release/* \
-  --title v26.04.1 --notes-file dist/release-notes.md --verify-tag
+gh release create 20261004 dist/release/* \
+  --title 20261004 --notes-file dist/release-notes.md --verify-tag
 ```
