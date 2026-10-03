@@ -50,7 +50,10 @@ kernel.  All output goes to `build/`, which git ignores.
 
 With Docker it is one command: `./docker-build.sh` builds everything in a
 container that pins the tools above (see `docs/building.md`).  On a host with
-those tools installed, `./build-all.sh` runs the same eight steps.
+those tools installed, `./build-all.sh` runs the same eight steps.  It can run
+a subset (`./build-all.sh --only 6,8`, `--skip`, `--from`, `--to`, `--list`)
+and, when a step's inputs are unchanged, skips it with a `[skip]` line instead
+of rebuilding.
 
 Then write `installer.img` to an SD card, insert it, and confirm the install
 with the front-panel button.  See `docs/using.md`.

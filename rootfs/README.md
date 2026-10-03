@@ -45,8 +45,11 @@ Systemd units (enabled by `hooks/30-services.sh` unless noted):
   on first boot (the artifact is built smaller than the partition).
 * `t2-hddled.service` - drives the per-bay HDD present/activity/fault LEDs.
 * `t2-leds.service` - drives the power LEDs (green activity, red fault).
-* `t2-powerkey.service` - power-button policy: short press ignored, a held press
-  asks for a graceful poweroff.
+* `t2-powerkey.service` - power-button policy: short press ignored; the hold
+  asks for a graceful poweroff the moment it reaches `press_seconds` (no
+  release needed, which also keeps the user away from the PMIC's own hard
+  cutoff).  The red power LED shows the hold and blinks while the shutdown
+  runs.
 * `t2-provision.service` - applies the `t2-config` FAT partition keys on boot.
 * `t2-ssh-hostkeys.service` - generates SSH host keys on first boot (the image
   ships none).
@@ -63,7 +66,8 @@ Drop-ins and configuration:
 * `etc/ssh/sshd_config.d/10-t2.conf` - root ssh with key *and* password.
 * `etc/systemd/logind.conf.d/10-t2.conf` - takes the power key away from logind.
 * `etc/systemd/system.conf.d/10-t2.conf` - feeds the RK3568 hardware watchdog.
-* `etc/t2/powerkey.conf` - `t2-powerkey.py` input device, key code and hold time.
+* `etc/t2/powerkey.conf` - `t2-powerkey.py` input device, key code, hold time
+  and LED indicator.
 * `etc/default/t2-hddled` - bay-to-block-device map and poll interval.
 * `etc/fw_env.config` - where U-Boot's persistent environment file lives.
 * `etc/u-boot-initial-env` - the initial U-Boot environment (A/B fallback).
@@ -147,6 +151,12 @@ firmware tree, requires `build/kernel` (built by `kernel/build.sh`), runs
 `t2-distro.py`, and writes `build/out/rootfs.ext4` plus the
 zstd-compressed `build/out/rootfs.ext4.zst` that `images/build-installer.sh`
 puts into the installer payload.
+
+`build.sh` reuses `build/rootfs/stage` instead of wiping it: each stage that
+changes the tree stamps its inputs under `build/rootfs/stage/.t2-stamps/`, so a
+rerun rebuilds only the stale stages.  A changed base tarball wipes the whole
+stage - stamps and all - forcing a full rebuild; `rm -rf build/rootfs/stage`
+does the same by hand.  `docs/building.md` lists what makes each stage stale.
 
 Useful flags: `--dry-run`, `--rebuild-initramfs`, `--no-zstd`,
 `--firmware-from-host/--firmware-ota/--firmware-from-dir`.  Each script also

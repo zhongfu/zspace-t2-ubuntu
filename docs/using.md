@@ -25,10 +25,13 @@ Then:
    `flash.window=`.  The shipped example uses **10 presses within 60 s**.  Press
    the power button that many times inside the window.
 
-The red power LED shows the count: it blinks 1.0 s on / 1.0 s off before the
-first press, then 0.1 s shorter after every counted press (press 1 -> 0.9 s,
-press 9 -> 0.1 s).  At the target count the red LED goes solid for 5 s, then the
-write phase alternates red and green at about 2 Hz until green is steady.
+The installer asks for the presses **before** it verifies the payload, so you do
+not sit through the sha256/zstd check first.  The red power LED is lit from the
+moment the installer starts - a working board never looks dead - and it shows
+the count: 1.0 s on / 1.0 s off before the first press, then 0.1 s shorter
+after every counted press (press 1 -> 0.9 s, press 9 -> 0.1 s).  At the target
+count the red LED goes solid for 5 s and stays solid through the payload
+verification and the write; green is steady when the write is done.
 
 The installer repartitions the eMMC, formats the boot partition, writes the
 rootfs, and writes the loader.  **Do not remove power during the write.**  If
@@ -90,6 +93,16 @@ bluetoothctl pair    <board-address>
 
 The reference client is `t2-ble.html`, a single-file Web Bluetooth page.  It
 needs a secure context (HTTPS or `localhost`) and desktop Chrome or Edge.
+
+## Powering off
+
+On a running system the power button is a *hold*: a short press does nothing,
+and the moment a hold reaches 3 s (`press_seconds` in
+`/etc/t2/powerkey.conf`) the system asks systemd for a graceful poweroff - no
+release needed.  The red power LED lights while you hold the button and blinks
+once the shutdown is running, so the board never looks dead.  Holding much
+longer is cut by the RK809 PMIC itself: that is a raw rail cut with no flush and
+no clean unmount, which is why the software threshold fires first.
 
 ## Back up the eMMC
 
@@ -155,6 +168,16 @@ device limit.  Writes are unaffected.  Write in chunks of at most 8 MiB at
 explicit LBAs, and read-verify only below 32 MiB; treat the boot as the proof
 for the rest.  `tools/t2-flash.py` drives this workflow, including the reset and
 the CTRL+C catch.
+
+## When the root filesystem does not come up
+
+If `root=LABEL=zspace-rootfs` cannot be resolved or mounted, the initramfs stays
+in its bring-up shell and prints a short report: the root spec, what it resolved
+to, the reason, and every block device's filesystem signature - so a missing or
+half-written `zspace-rootfs` label is obvious at a glance.  Add `t2.debug=1` to
+the kernel cmdline (or `T2_INIT_DEBUG=1` to the environment) for the full
+bring-up dump: uname, cmdline, mmc hosts, `/proc/partitions`, PCIe devices and
+the dmesg tail.
 
 ## What is not covered
 

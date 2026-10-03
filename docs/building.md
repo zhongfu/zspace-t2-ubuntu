@@ -94,6 +94,77 @@ kernel already built finished in about **30 s**.  A U-Boot build and a rootfs
 build are faster than the kernel, but both include downloads, so treat them as
 network-bound.  No separate wall-clock was recorded for U-Boot or rootfs.
 
+## Rebuilding one step
+
+`build-all.sh` can run a subset of the eight steps:
+
+```sh
+./build-all.sh --only 6,8     # U-Boot and the installer image only
+./build-all.sh --from 7       # rootfs and installer image
+./build-all.sh --to 4         # firmware, initramfs, kernel tree, kernel
+./build-all.sh --skip 4       # everything but the kernel build
+./build-all.sh --list         # the steps and their commands
+```
+
+Steps 3 and 5 are skipped when their output tree is already there (they fetch
+and refuse to clobber a tree).  Steps 2, 4, 6, 7 and 8 record a sha256 of their
+inputs under `build/.stamps/`, so a re-run whose inputs are unchanged prints
+`[skip] 7/8 rootfs: unchanged (build/.stamps/step7-rootfs.sha256)` and rebuilds
+nothing.  The stamps hash file *content*, so editing a file changes a stamp but
+a bare `touch` does not.  To force one step, delete its stamp (or edit one of
+its inputs):
+
+| Step | Stamp | Inputs |
+|---|---|---|
+| 2 | `step2-initramfs.sha256` | the `rootfs/initramfs/` tree (its output is embedded in the kernel Image, so a changed `init` or `installer.sh` must invalidate step 4 too) |
+| 4 | `step4-kernel.sha256` | `kernel/` scripts, config and patches, `build/initramfs`, the kernel tree's HEAD |
+| 6 | `step6-uboot.sha256` | `u-boot/` scripts, configs, DTS and patches, the rkbin blobs, the U-Boot tree's HEAD |
+| 7 | `step7-rootfs.sha256` | the `rootfs/profiles/t2-base` tree, `rootfs/firmware/`, `rootfs/initramfs/firmware/`, the rootfs scripts and `lib/`, `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules` |
+| 8 | `step8-installer.sha256` | `images/` tools and the config template, `Image`, `rk3568-t2.dtb`, `u-boot.itb`, `idbloader.img`, `rootfs.ext4.zst` (plus `Image.old`/`u-boot-initial-env` when present) |
+
+Step 8 consumes the U-Boot artefacts and step 7 does not, so a change to a
+step-6 input (for example `u-boot/dts/rk3568-t2.dts`) re-runs steps 6 and 8 but
+leaves 7 alone.
+
+### Rootfs stage reuse
+
+Step 7 (`rootfs/build.sh` -> `t2-distro.py`) keeps its working tree in
+`build/rootfs/stage` and no longer wipes it on every run.  Each stage that
+modifies the tree records a stamp in `build/rootfs/stage/.t2-stamps/`, and a
+re-run only rebuilds the stages whose inputs changed:
+
+| Stage | Stamp | Stale when |
+|---|---|---|
+| base | the pinned base tarball sha256 | the tarball in `profile/base.json` changes |
+| packages | the sha256 of `packages.txt` | a package is added, removed or renamed |
+| overlay | the hash of the profile `overlay/` tree | an overlay file is edited, added or removed |
+| hooks | the hash of the hook scripts, the hook environment and the firmware tree | a hook is edited, or the firmware changes |
+| modules | the kernel tree's `.config` sha256, its release, and the hash of its built `.ko` | the kernel config or release changes, or a source/patches edit rebuilds the modules (a patch edit keeps the config and release identical, so the `.ko` hash is what catches it) |
+
+A rebuilt stage cascades into the stages that read its result: a packages
+rebuild re-runs overlay and hooks; an overlay rebuild re-runs hooks; a changed
+base tarball wipes the whole stage, so every stage re-runs (including the 35
+package apt install).  The stamps are lifted out around `mke2fs`, so they never
+land in the image.
+
+To force a full rootfs rebuild, delete the stage tree (the stamps go with it):
+
+```sh
+rm -rf build/rootfs/stage        # next rootfs build re-extracts and re-apts
+rm -f build/.stamps/step7-rootfs.sha256   # make build-all re-run step 7
+```
+
+A rootfs build that adopts an existing stage starts at the first stale stage and
+still ends with `build/out/rootfs.ext4` + `.zst`, and the file-based checks
+(`verify`) still run and must pass.
+
+Measured 2026-10-03: with every stage stamp matching, `rootfs/build.sh` rebuilt
+the image in **13.6 s wall** (t2-distro 10.9 s) and all 39 checks passed.  A run
+that had to rebuild overlay + hooks + modules (base and packages adopted from
+the previous build's manifest) took **106 s wall**.  A full `build-all.sh` whose
+inputs were all unchanged - steps 4, 6, 7 and 8 all stamped - finished in
+**1.4 s wall**, against the reference full run's 1698 s (`manifest.json`).
+
 ## Firmware
 
 The Broadcom WiFi and Bluetooth firmware for the AP6275P module comes from the
