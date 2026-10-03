@@ -24,19 +24,55 @@ mount -t devpts devpts /dev/pts 2>/dev/null
 # boot should go straight to systemd, and the installer prints its own banner,
 # so nothing here runs unless the root did not come up (see the call site next
 # to bring_up_recovery_net at the bottom).
+#
+# Candidate root block devices, as absolute /dev paths.  The pseudo devices and
+# the eMMC boot partitions can never carry the rootfs, so skip them.  Shared by
+# resolve_root and the failure report below.
+block_devices() {
+	for s in /sys/class/block/*; do
+		case "${s##*/}" in loop*|ram*|zram*|*boot0|*boot1) continue ;; esac
+		[ -b "/dev/${s##*/}" ] && echo "/dev/${s##*/}"
+	done
+}
+
+# The full legacy dump is opt-in: t2.debug=1 on the kernel cmdline (parsed
+# below) or T2_INIT_DEBUG=1 in the environment.  Default boots keep the
+# recovery console short.
+init_debug() {
+	[ "${INIT_DEBUG:-}" = 1 ] || [ "${T2_INIT_DEBUG:-}" = 1 ]
+}
+
+# A root that did not resolve/mount reports *why* in a handful of lines.  The
+# per-device blkid listing makes a missing zspace-rootfs label obvious at a
+# glance; the legacy dump stays behind init_debug so the recovery console is
+# readable by default.
 show_bringup_info() {
 echo
-echo "=== ZSpace T2 mainline 7.3 bring-up initramfs ==="
-uname -a
-echo "cmdline: $(cat /proc/cmdline)"
-echo "--- mmc hosts ---"
-ls /sys/class/mmc_host/
-echo "--- block devices ---"
-cat /proc/partitions
-echo "--- PCIe devices ---"
-ls /sys/bus/pci/devices/
-echo "--- dmesg (tail) ---"
-dmesg | tail -25
+echo "=== root bring-up failed ==="
+echo "root spec : ${ROOTSPEC:-<empty>}"
+echo "resolved  : ${ROOTDEV:-none}"
+echo "reason    : ${ROOT_FAIL:-unknown}"
+echo "--- blkid per block device ---"
+for d in $(block_devices); do
+	info=$(busybox blkid "$d" 2>/dev/null)
+	[ -n "$info" ] || info="(no filesystem signature)"
+	echo "  ${d##*/}: $info"
+done
+echo "hint: a half-written target (interrupted flash) looks exactly like this."
+if init_debug; then
+	echo
+	echo "=== ZSpace T2 mainline 7.3 bring-up initramfs (t2.debug=1) ==="
+	uname -a
+	echo "cmdline: $(cat /proc/cmdline)"
+	echo "--- mmc hosts ---"
+	ls /sys/class/mmc_host/
+	echo "--- block devices ---"
+	cat /proc/partitions
+	echo "--- PCIe devices ---"
+	ls /sys/bus/pci/devices/
+	echo "--- dmesg (tail) ---"
+	dmesg | tail -25
+fi
 }
 
 # ---------------------------------------------------------------------------
@@ -251,11 +287,14 @@ ROOTSPEC=""
 # rootfstype= is honoured too; both are optional.
 ROOTFLAGS=""
 ROOTFSTYPE=""
+# INIT_DEBUG arms the full failure dump in show_bringup_info; see init_debug().
+INIT_DEBUG=""
 for w in $(cat /proc/cmdline); do
 	case "$w" in
 		root=*)       ROOTSPEC=${w#root=} ;;
 		rootflags=*)  ROOTFLAGS=${w#rootflags=} ;;
 		rootfstype=*) ROOTFSTYPE=${w#rootfstype=} ;;
+		t2.debug=1)   INIT_DEBUG=1 ;;
 	esac
 done
 
@@ -272,10 +311,7 @@ resolve_root() {
 		*)       return 1 ;;
 	esac
 	want=${1#*=}
-	for s in /sys/class/block/*; do
-		case "${s##*/}" in loop*|ram*|zram*|*boot0|*boot1) continue ;; esac
-		d=/dev/${s##*/}
-		[ -b "$d" ] || continue
+	for d in $(block_devices); do
 		# `busybox <applet>` and not the bare name: this busybox only ships a
 		# subset of PATH symlinks (empty `busybox --install` aside), and
 		# `blkid`/`tr`/`switch_root` were measured "not found" as bare
@@ -290,6 +326,8 @@ resolve_root() {
 }
 
 ROOTDEV=""
+ROOT_FAIL=""
+echo "resolving root ($ROOTSPEC), up to 10 tries"
 i=0
 while [ $i -lt 10 ]; do
 	i=$((i + 1))
@@ -301,9 +339,13 @@ while [ $i -lt 10 ]; do
 	[ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] && break
 	# the storage controller probes asynchronously, so a label lookup can come
 	# back empty on the first tries; re-resolve rather than only re-check
-	echo "waiting for root ($ROOTSPEC), try $i"
 	sleep 1
 done
+if [ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ]; then
+	echo "root ($ROOTSPEC) resolved to $ROOTDEV after $i tries"
+else
+	echo "root ($ROOTSPEC) unresolved after $i tries"
+fi
 
 if [ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ]; then
 	mkdir -p /newroot
@@ -337,12 +379,15 @@ if [ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ]; then
 			exec busybox switch_root /newroot /sbin/init
 		fi
 		echo "*** $ROOTDEV mounted but has no /sbin/init - staying in the bring-up shell ***"
+		ROOT_FAIL="mount succeeded, but no /sbin/init"
 		umount /newroot
 	else
 		echo "*** failed to mount $ROOTDEV - staying in the bring-up shell ***"
+		ROOT_FAIL="mount failed"
 	fi
 else
 	echo "*** no usable root device for root=$ROOTSPEC - staying in the bring-up shell ***"
+	ROOT_FAIL="root device absent"
 fi
 
 # Root did not come up, so the board has to be reachable some other way
