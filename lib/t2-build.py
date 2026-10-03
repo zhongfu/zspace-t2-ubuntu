@@ -70,11 +70,13 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -101,7 +103,18 @@ ROOTFS_CACHE = ROOT / "build" / "rootfs"
 CROSS_PREFIX = "aarch64-linux-gnu-"
 CROSS_ROOT = ROOT / "tools" / "cross" / "root"          # optional vendored gcc
 CROSS_BIN = CROSS_ROOT / "usr" / "bin"
-CROSS_LIB = CROSS_ROOT / "usr" / "lib" / "x86_64-linux-gnu"
+
+
+def host_multiarch() -> str:
+    """The host's multiarch tuple, e.g. x86_64-linux-gnu or
+    aarch64-linux-gnu.  A vendored toolchain keeps its host libraries under
+    ``usr/lib/<tuple>``, and that tuple differs by host architecture (the
+    target is always arm64; only the host varies)."""
+    return (sysconfig.get_config_var("MULTIARCH")
+            or f"{platform.machine()}-linux-gnu")
+
+
+CROSS_LIB = CROSS_ROOT / "usr" / "lib" / host_multiarch()
 DTC = ROOT / "tools" / "dtc-root" / "usr" / "bin" / "dtc"
 RK_FIT = ROOT / "images" / "rk-fit.py"
 T2_FLASH = ROOT / "tools" / "t2-flash.py"

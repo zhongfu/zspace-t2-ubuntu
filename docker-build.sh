@@ -9,14 +9,18 @@
 # The repository is bind-mounted at /work and the container runs with your uid
 # and gid, so everything it writes into build/ stays yours.  The image is built
 # once and cached; rebuild it with `docker build --no-cache` when the baked apt
-# lists go stale (rootfs/t2-distro.py resolves qemu-user-static's version from
-# them).
+# lists go stale (rootfs/t2-distro.py resolves qemu-user-static's / proot's
+# version from them).
+#
+# The default tag carries the host architecture: the image is built for the
+# host it runs on (the package list is arch-specific), so an image built on
+# amd64 is never reused on arm64.  IMAGE= overrides the whole tag.
 #
 # Usage: docker-build.sh [command [args...]]
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-image=${IMAGE:-zspace-t2-build:latest}
+image=${IMAGE:-zspace-t2-build:$(uname -m)}
 
 docker build -q -t "$image" "$here" >/dev/null
 

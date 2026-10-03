@@ -9,9 +9,16 @@ work:
 * `.github/workflows/build.yml` runs on pull requests and branch pushes.  It
   builds a fast subset (`build-all.sh` steps 2 to 6: initramfs, kernel and
   U-Boot), keeps no artefacts, and skips the slow rootfs and installer steps.
+  It runs on both host architectures (`ubuntu-26.04` and `ubuntu-26.04-arm`),
+  so an arm64-only breakage shows up before a release.
 
 Both workflows build in the Docker image from `Dockerfile`, through
 `docker-build.sh`.  `docs/building.md` explains that image and the build steps.
+The build works on x86-64 and arm64 hosts; on arm64 the rootfs chroot runs
+natively instead of under QEMU.  The release builds on `ubuntu-latest` (x86-64)
+by default: set the repository variable **T2_RELEASE_RUNNER** to
+`ubuntu-26.04-arm` (Settings > Secrets and variables > Actions > Variables) to
+build it on arm64 instead.
 
 ## Set up a repository
 

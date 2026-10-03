@@ -22,7 +22,15 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Both host architectures: the build has to work on either (docs/building.md).
+    # The arm64 job is where the Dockerfile's per-arch package list and the
+    # cross toolchain get exercised on arm64; GitHub's arm64 runners are free for
+    # public repositories.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
       - name: Check out

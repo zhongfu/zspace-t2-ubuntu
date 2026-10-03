@@ -23,7 +23,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # The build works on amd64 and arm64 hosts (docs/building.md).  Set the
+    # repository variable T2_RELEASE_RUNNER to ubuntu-26.04-arm to build the
+    # release natively on arm64, where the rootfs chroot runs without QEMU.
+    runs-on: ${{ vars.T2_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 300
     outputs:
       tag: ${{ steps.tag.outputs.tag }}

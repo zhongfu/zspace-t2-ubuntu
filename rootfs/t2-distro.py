@@ -8,7 +8,8 @@ The profile is data (see rootfs/README.md); this driver turns it into an
 ext4 image without host root and without a board:
 
     base      the cached, sha256-pinned base tarball, extracted into <out>/stage
-    tools     qemu-user-static + proot, fetched unprivileged, then *proved*
+    tools     proot (+ qemu-user-static off arm64), fetched or taken from
+              PATH, then *proved*
     packages  policy-rc.d + apt-get update && apt-get install, inside the chroot
     overlay   overlay/** copied verbatim into the stage
     debs      build the board userspace .deb, ship it in the image's own apt
@@ -41,6 +42,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -81,14 +83,35 @@ flash_plan = T2B.flash_plan    # rockusb `wl` chunk arithmetic
 STAGES = ("base", "tools", "packages", "overlay", "debs", "hooks", "modules",
           "image", "verify", "manifest")
 
+# The target is always arm64; only the *host* architecture varies, and it
+# decides whether the chroot needs qemu to run the arm64 guest binaries.
+HOST_ARCH_ALIASES = {
+    "x86_64": "amd64", "amd64": "amd64",
+    "aarch64": "arm64", "arm64": "arm64",
+}
+
+
+def host_arch() -> str:
+    """This host's architecture as a Debian name: amd64, arm64, or the raw
+    `uname -m` when it is neither (which the tool fetch then rejects)."""
+    m = platform.machine().lower()
+    return HOST_ARCH_ALIASES.get(m, m)
+
+
+def host_is_arm64() -> bool:
+    return host_arch() == "arm64"
+
+
 # Unprivileged tool fetch.  `apt-get download` + `dpkg-deb -x` needs no root
 # and is the only way to get qemu-aarch64-static here (no binfmt_misc: that
-# needs root, and `sudo -n` fails on this host).
+# needs root, and `sudo -n` fails on this host).  qemu only runs an arm64
+# guest on a *non*-arm64 host: on an arm64 host the chroot runs natively, so
+# it is neither fetched nor passed to proot.
 QEMU_DEBS = ("qemu-user-static",)
 QEMU_BIN = "usr/bin/qemu-aarch64-static"
 
-# proot: NOT taken from the Ubuntu archive.  The archive's proot 5.1.0
-# (2018) does not translate guest paths when it runs a foreign binary
+# proot: on amd64 NOT taken from the Ubuntu archive.  The archive's proot
+# 5.1.0 (2018) does not translate guest paths when it runs a foreign binary
 # through -q on this host: inside the chroot, open()/stat() then hit the
 # *host* filesystem (proving it: `stat /etc/hostname` inside the chroot
 # reports the host's inode, and every file the build creates is
@@ -99,8 +122,20 @@ QEMU_BIN = "usr/bin/qemu-aarch64-static"
 # download no longer matches (the build served since 2026-10-02 is
 # v5.4.1-32-g25dc6a3).  probe_chroot() below is what actually guards the path
 # translation; this pin only records which binary was measured.
+#
+# On arm64 the pinned upstream file cannot be used: it is an x86-64 ELF, and
+# no arm64 binary is published at that URL.  There the guest binary is native,
+# so the path-translation bug above cannot apply, and the *host's* proot is
+# used instead.  It cannot be unpacked from the archive the way qemu is: the
+# Ubuntu proot is dynamically linked against libtalloc2, so a bare
+# apt-get download + dpkg-deb -x leaves it unrunnable (exit 127,
+# "libtalloc.so.2: cannot open shared object file").  The Dockerfile installs
+# the distro package on arm64, and a bare host build needs it on PATH; the
+# error below says so.  probe_chroot() is still the guard, exactly as on
+# amd64.
 PROOT_URL = "https://proot.gitlab.io/proot/bin/proot"
 PROOT_SHA256 = "90375de3807212b8f948ff98ed66020f7c9cf7ea447c8734f1af02a2643c8d26"
+PROOT_PACKAGE = "proot"
 
 # Inside the chroot.  The base tarball ships no /etc/resolv.conf at all, so
 # without this bind apt cannot resolve archive.ubuntu.com; the bind is
@@ -544,7 +579,9 @@ class Profile:
 class Chroot:
     """Runs a POSIX sh script as the *target* architecture in <stage>.
 
-    proot (default, no root): proot -0 -q qemu-aarch64-static -r <stage> ...
+    proot (default, no root): proot -0 [-q qemu-aarch64-static] -r <stage> ...
+    `-q` is passed only off arm64: on an arm64 host the guest is native, and
+    there is no qemu-user-static in the tools cache.
     `-0` is load-bearing: the profile's hooks install into /root and dpkg
     refuses to run unprivileged, so the guest has to believe it is root.
     Nothing is really chowned - the stage is re-owned under fakeroot when
@@ -574,14 +611,17 @@ class Chroot:
             die("this stage needs a chroot backend (--backend proot|sudo)")
         if self.backend == "sudo":
             return ["sudo", "chroot", str(self.stage)] + env
-        if self.proot is None or self.qemu is None:
-            die("proot backend needs the tools stage (proot + qemu)")
+        if self.proot is None:
+            die(f"proot backend needs the tools stage (proot missing) on host "
+                f"{host_arch()}")
         # /proc, /dev and /sys must be bound for the *proot* backend too: the
         # sudo backend gets them from mount(8), but under proot nothing else
         # provides them, and systemd's postinst fails ("/proc/ is not
         # mounted", then ENOSYS from its machine-id setup) without /proc.
-        argv = [str(self.proot), "-0", "-q", str(self.qemu),
-                "-r", str(self.stage)]
+        argv = [str(self.proot), "-0"]
+        if self.qemu is not None:       # off arm64 only: emulates the guest
+            argv += ["-q", str(self.qemu)]
+        argv += ["-r", str(self.stage)]
         for host in self.HOST_BINDS:
             argv += ["-b", host]
         for src, dst in self.binds:
@@ -704,33 +744,55 @@ def cached_tools(args) -> tuple:
 
     A --stages run that skips the tools stage still needs the binaries; this
     resolves them from the cache so such a run neither downloads nor fails.
+    On an arm64 host proot comes from PATH and qemu is not needed at all, so
+    the second element is always None.
     """
     cache = Path(args.tools_cache).resolve()
+    if host_is_arm64():
+        return _host_proot(), None
     proot, qemu = cache / "proot", cache / "root" / QEMU_BIN
     if proot.is_file() and sha256_file(proot) != PROOT_SHA256:
         proot = None
     return proot, (qemu if qemu.is_file() else None)
 
-def ensure_qemu(args, R: Runner) -> Path:
-    debs, root = _dpkg_cache(args, R)
+
+def _apt_unpack(args, R: Runner, names: tuple, root: Path, want: Path) -> None:
+    """apt-get download + dpkg-deb -x `names` into `root`, unprivileged."""
+    debs, _ = _dpkg_cache(args, R)
+    debs.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        R.run(["apt-get", "download", name], cwd=debs)
+    for deb in sorted(debs.glob("*.deb")):
+        R.run(["dpkg-deb", "-x", str(deb), str(root)])
+    if not want.exists():
+        die(f"{want.relative_to(root)} missing after dpkg-deb -x of {names}")
+
+
+def ensure_qemu(args, R: Runner) -> "Path | None":
+    """qemu-aarch64-static, or None when the host is arm64 (no emulation)."""
+    if host_is_arm64():
+        return None
+    if host_arch() != "amd64":
+        die(f"unsupported host architecture {host_arch()!r}: "
+            f"qemu-user-static is fetched on amd64 hosts only")
+    _, root = _dpkg_cache(args, R)
     qemu = root / QEMU_BIN
     if qemu.exists():
         return qemu
     if R.dry:
         log(f"  [dry] would apt-get download {' '.join(QEMU_DEBS)}")
         return qemu
-    debs.mkdir(parents=True, exist_ok=True)
-    root.mkdir(parents=True, exist_ok=True)
-    for name in QEMU_DEBS:
-        R.run(["apt-get", "download", name], cwd=debs)
-    for deb in sorted(debs.glob("*.deb")):
-        R.run(["dpkg-deb", "-x", str(deb), str(root)])
-    if not qemu.exists():
-        die(f"{QEMU_BIN} missing after dpkg-deb -x of {QEMU_DEBS}")
+    _apt_unpack(args, R, QEMU_DEBS, root, qemu)
     return qemu
 
 
 def ensure_proot(args, R: Runner) -> Path:
+    if host_is_arm64():
+        return _ensure_proot_host()
+    if host_arch() != "amd64":
+        die(f"unsupported host architecture {host_arch()!r}: proot is "
+            f"fetched on amd64 and arm64 hosts only")
     cache = Path(args.tools_cache).resolve()
     local = cache / "proot"
     if local.exists() and sha256_file(local) == PROOT_SHA256:
@@ -748,6 +810,26 @@ def ensure_proot(args, R: Runner) -> Path:
     tmp.replace(local)
     local.chmod(0o755)
     return local
+
+
+def _host_proot() -> "Path | None":
+    """The proot on PATH, or None when it is not installed."""
+    found = shutil.which(PROOT_PACKAGE)
+    return Path(found) if found else None
+
+
+def _ensure_proot_host() -> Path:
+    """arm64: use the host's proot.
+
+    The pinned upstream binary is x86-64 only, and the Ubuntu package cannot
+    be run out of a dpkg-deb -x cache (it needs libtalloc2), so arm64 uses
+    whatever `proot` the distribution provides.
+    """
+    proot = _host_proot()
+    if proot is None:
+        die(f"{PROOT_PACKAGE} is not on PATH; install it "
+            f"(apt-get install {PROOT_PACKAGE})")
+    return proot
 
 
 def probe_chroot(R: Runner, ch: Chroot, stage: Path) -> dict:
@@ -774,7 +856,11 @@ def probe_chroot(R: Runner, ch: Chroot, stage: Path) -> dict:
 
 def stage_tools(args, R: Runner, prof: Profile, stage: Path,
                 chroots: list) -> None:
-    log("-- tools: unprivileged qemu-user-static + proot, then prove them --")
+    if host_is_arm64():
+        log("-- tools: the host's proot (no qemu needed), then prove it --")
+    else:
+        log("-- tools: unprivileged qemu-user-static + proot, then prove "
+            "them --")
     if args.backend == "none":
         log("  [skip] backend none: no chroot, no tools")
         return
@@ -786,31 +872,41 @@ def stage_tools(args, R: Runner, prof: Profile, stage: Path,
         return
     tools = tool_facts(ch.proot, ch.qemu)
     log(f"  {ch.proot.name}: {tools['proot']['version']}")
-    log(f"  {ch.qemu.name}: {tools['qemu_aarch64_static']['version']}")
+    if ch.qemu is not None:
+        log(f"  {ch.qemu.name}: {tools['qemu_aarch64_static']['version']}")
+    else:
+        log("  qemu-aarch64-static: not used (native arm64 host)")
     LAST["tools"] = tools
     LAST["probe"] = probe_chroot(R, ch, stage)
 
 
-def tool_facts(proot: Path, qemu: Path) -> dict:
-    """Path, pinned sha256 and version of the two chroot tools.
+def tool_facts(proot: Path, qemu: Path = None) -> dict:
+    """Path, sha256 and version of the chroot tools that actually ran.
 
     Recorded from the binaries themselves, not remembered from the tools
     stage, so a --stages run that skips that stage still writes a manifest
-    that says exactly what emulated the build.
+    that says exactly what emulated the build.  qemu is None on an arm64
+    host, where the guest runs natively.
     """
     pv = subprocess.run([str(proot), "--version"], capture_output=True,
                         text=True).stdout
     # the version sits at the end of the ASCII-art banner line
     m = re.search(r"v\d+\.\d+\S*", pv)
-    qv = subprocess.run([str(qemu), "--version"], capture_output=True,
-                        text=True).stdout.strip().splitlines()[0]
-    return {"proot": {"path": str(proot), "sha256": sha256_file(proot),
-                      "url": PROOT_URL,
-                      "version": m.group(0) if m else ""},
-            "qemu_aarch64_static": {"path": str(qemu),
-                                    "sha256": sha256_file(qemu),
-                                    "package": " ".join(QEMU_DEBS),
-                                    "version": qv}}
+    proot_facts = {"path": str(proot), "sha256": sha256_file(proot),
+                   "version": m.group(0) if m else ""}
+    if host_is_arm64():
+        proot_facts["package"] = PROOT_PACKAGE
+    else:
+        proot_facts["url"] = PROOT_URL
+    tools = {"proot": proot_facts}
+    if qemu is not None:
+        qv = subprocess.run([str(qemu), "--version"], capture_output=True,
+                            text=True).stdout.strip().splitlines()[0]
+        tools["qemu_aarch64_static"] = {"path": str(qemu),
+                                        "sha256": sha256_file(qemu),
+                                        "package": " ".join(QEMU_DEBS),
+                                        "version": qv}
+    return tools
 
 
 # --------------------------------------------------------------------------
@@ -2141,8 +2237,7 @@ build unless every stage ran"
     # Record what actually emulated the build even when the tools stage was
     # skipped: a --stages rerun writes a fresh manifest and must not blank the
     # provenance of the image it is describing.
-    if args.backend != "none" and not LAST.get("tools") \
-            and cached_proot and cached_qemu:
+    if args.backend != "none" and not LAST.get("tools") and cached_proot:
         LAST["tools"] = tool_facts(cached_proot, cached_qemu)
     if not on("manifest"):
         log("-- manifest: not in --stages, nothing written --")

@@ -6,7 +6,11 @@ paths from their own location, so the repository works from any clone path.
 
 ## Host setup
 
-Build on a Linux x86-64 host with about 40 GB free.  Install these packages
+Build on a Linux x86-64 or arm64 host with about 40 GB free.  The target is
+always arm64; the host architecture only decides how the rootfs chroot runs.
+On x86-64 the arm64 guest binaries are emulated: the build fetches
+`qemu-user-static` and a pinned upstream `proot`.  On arm64 they run natively:
+no qemu is fetched, and the host's own `proot` is used.  Install these packages
 (Ubuntu/Debian names):
 
 | Package | Needed by |
@@ -23,14 +27,19 @@ Build on a Linux x86-64 host with about 40 GB free.  Install these packages
 | `dosfstools`, `mtools` | the FAT boot tree on the installer card (`mkfs.vfat`, `mcopy`) |
 | `curl`, `tar` | fetch and unpack the Ubuntu base tarball |
 | `bzip2` | unpack the pinned BusyBox source (`.tar.bz2`) |
-| `qemu-user-static`, `proot` | run the arm64 chroot for package installation |
-| `dpkg-deb`, `apt-get` | build the `t2-utils` package, extract `qemu-user-static`, install packages in the chroot |
+| `qemu-user-static`, `proot` | run the arm64 chroot for package installation (on x86-64 hosts the rootfs build fetches both; on arm64 hosts `proot` must be installed, and the Dockerfile does) |
+| `dpkg-deb`, `apt-get` | build the `t2-utils` package, extract the chroot tools, install packages in the chroot |
 
 Notes:
 
-* The rootfs build fetches `qemu-user-static` and a pinned `proot` itself, with
-  no host root.  You still need a Debian/Ubuntu host, `apt-get`, and network
-  access to the Ubuntu archive and to `proot.gitlab.io`.
+* The rootfs build fetches its chroot tools itself on x86-64 hosts, with no
+  host root: `qemu-user-static` and a pinned upstream `proot`
+  (`proot.gitlab.io`), so you need network access to that site.  On arm64
+  hosts the guest binaries are native, so no qemu is needed and the build uses
+  the host's own `proot` (the pinned upstream build is x86-64 only, and the
+  Ubuntu package cannot run out of the build's unpacked cache).  Install
+  `proot` there; the Dockerfile installs it in the image.  Either way you need
+  a Debian/Ubuntu host, `apt-get`, and network access to the Ubuntu archive.
 * `CROSS_COMPILE` defaults to `aarch64-linux-gnu-`.  Set it if your toolchain
   has another prefix.  A custom toolchain may also need `LD_LIBRARY_PATH`.
 * `libncurses-dev` is only needed if you want `make menuconfig`.
@@ -71,15 +80,16 @@ the container below.  Step 1 verifies the blobs committed in
 `rootfs/initramfs/build.sh` lays out.  If you build the kernel first, the
 embedded initramfs is wrong.
 
-`rootfs/fetch.sh` runs first because `rootfs/build.sh` stops without the vendor
-firmware.  `rootfs/initramfs/build.sh` builds the static busybox and the
-initramfs layout, plus a static `zstd` built from a pinned tarball: the
-installer streams its payloads through `zstd -dc` on the board, and busybox has
-no zstd applet, so both live in the initramfs.  `kernel/build.sh` applies the
-five patches in `kernel/patches/`, copies `kernel/config/kernel.config`, runs
-`olddefconfig`, and builds `Image`, `dtbs`, and `modules`; a tree that already
-carries all five patches is rebuilt as it is, so a re-run does not apply them
-twice.
+`rootfs/fetch.sh` runs first: it verifies the vendor blobs committed in
+`rootfs/firmware/brcm/` and writes the mainline names there, and
+`rootfs/build.sh` needs those names.  `rootfs/initramfs/build.sh` builds the
+static busybox and the initramfs layout, plus a static `zstd` built from a
+pinned tarball: the installer streams its payloads through `zstd -dc` on the
+board, and busybox has no zstd applet, so both live in the initramfs.
+`kernel/build.sh` applies the five patches in `kernel/patches/`, copies
+`kernel/config/kernel.config`, runs `olddefconfig`, and builds `Image`, `dtbs`,
+and `modules`; a tree that already carries all five patches is rebuilt as it
+is, so a re-run does not apply them twice.
 `u-boot/build.sh` builds two images from one board control: the plain image for
 the eMMC and the installer image for the card, each with its own
 `idbloader.img`.  `rootfs/build.sh` builds the rootfs ext4 image;
@@ -230,16 +240,23 @@ build inside it - the same eight steps, through `build-all.sh`:
 The image carries no repository content: the tree is bind-mounted at `/work`,
 the container runs with your uid and gid, so `build/` stays yours, and the only
 things baked in are Ubuntu 24.04 and the packages listed above (plus `bzip2` for
-the BusyBox source).  The apt lists are left in the image on purpose -
-`rootfs/t2-distro.py` fetches `qemu-user-static` with `apt-get download`.  Build
-the image once; rebuild it (`docker build --no-cache`) when those lists go
-stale, because the download resolves its version from them.
+the BusyBox source).  The arch-specific target headers are selected when the
+image is built, from the image's own architecture (`dpkg --print-architecture`).
+The default tag is `zspace-t2-build:$(uname -m)`, so an image built on one
+architecture is never run on the other; `IMAGE=` overrides the tag.  The apt
+lists are left in the image on purpose - on x86-64 hosts `rootfs/t2-distro.py`
+fetches `qemu-user-static` with `apt-get download`, and the lists let it
+resolve the version.  On arm64 the image installs `proot` directly (see the
+notes above).  Build the image once; rebuild it (`docker build --no-cache`)
+when those lists go stale, because the download resolves the version from
+them.
 
 Caveats that remain:
 
 * **Network.**  The fetch steps still clone Linux, U-Boot and rkbin, unpacks the
-  Ubuntu base tarball, downloads the BusyBox source, collects `qemu-user-static`
-  and `proot`, and apt-installs the profile inside the chroot.  All of it is
+  Ubuntu base tarball, downloads the BusyBox source, collects its chroot tools
+  (`qemu-user-static` and `proot` on x86-64 hosts; on arm64 `proot` is already
+  installed), and apt-installs the profile inside the chroot.  All of it is
   cached under `build/`, so a second run only re-downloads inside the chroot.
 * **`ptrace`.**  `docker-build.sh` passes `--security-opt seccomp=unconfined`:
   the default rootfs backend is `proot`, which needs `ptrace`, and Docker's
