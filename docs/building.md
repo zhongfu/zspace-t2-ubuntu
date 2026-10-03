@@ -1,7 +1,7 @@
 # Building the images
 
 This page sets up the host, explains the build order and the entry points, and
-notes the firmware that is not in the repository.  All scripts resolve their
+notes the firmware the images embed.  All scripts resolve their
 paths from their own location, so the repository works from any clone path.
 
 ## Host setup
@@ -42,7 +42,7 @@ Run the entry points from the repository root, in this order.  Each script has
 
 | Step | Command | Output |
 |---|---|---|
-| 1 | `rootfs/fetch.sh` | `rootfs/firmware/` (vendor WiFi/BT blobs) |
+| 1 | `rootfs/fetch.sh` | `rootfs/firmware/brcm/` (verified blobs and mainline names) |
 | 2 | `rootfs/initramfs/build.sh` | `build/initramfs` (static busybox + zstd initramfs tree) |
 | 3 | `kernel/fetch.sh` | `build/kernel` (mainline tag `v7.3-rc5`) |
 | 4 | `kernel/build.sh` | `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules/` |
@@ -62,9 +62,9 @@ images/build-installer.sh                # 8
 
 `./build-all.sh` runs the same eight steps in this order, skipping a fetch whose
 tree is already there, so it is safe to re-run; `./docker-build.sh` runs it in
-the container below.  Step 1 is the one thing they cannot do for you: the vendor
-firmware needs a source, so `build-all.sh` stops with the `rootfs/fetch.sh`
-invocation to run when it is missing.
+the container below.  Step 1 verifies the blobs committed in
+`rootfs/firmware/brcm/` and writes the mainline names; it needs no network.
+`build-all.sh` stops with a clear message when a blob is missing.
 
 **Step 2 must precede step 4.**  The kernel build rewrites
 `CONFIG_INITRAMFS_SOURCE` to `<repo>/build/initramfs`, the tree that
@@ -193,10 +193,13 @@ details.
 ## Firmware
 
 The Broadcom WiFi and Bluetooth firmware for the AP6275P module comes from the
-vendor rootfs and is **not redistributable**.  It is not in this repository and
-cannot be shipped.  `rootfs/fetch.sh` collects it from a T2 that still runs the
-vendor firmware, or from a vendor update package.  `rootfs/build.sh` stops with
-a clear message when the firmware is missing.
+vendor rootfs.  No redistributable source ships it: it is not in
+`linux-firmware`, and the Ubuntu firmware packages do not carry it.  The four
+vendor blobs are committed in `rootfs/firmware/brcm/` and embedded in the
+images.  `rootfs/fetch.sh` verifies them and writes the mainline names; it can
+also refresh them from a T2 that still runs the vendor firmware, or from a
+vendor update package.  `rootfs/build.sh` stops with a clear message when the
+firmware is missing.
 
 The mainline driver expects these names in `/lib/firmware/brcm/`:
 

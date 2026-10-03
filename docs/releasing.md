@@ -9,34 +9,15 @@ work:
 * `.github/workflows/build.yml` runs on pull requests and branch pushes.  It
   builds a fast subset (`build-all.sh` steps 2 to 6: initramfs, kernel and
   U-Boot), keeps no artefacts, and skips the slow rootfs and installer steps.
-  When `T2_FIRMWARE_URL` is not set, it builds U-Boot only and says so.
 
 Both workflows build in the Docker image from `Dockerfile`, through
 `docker-build.sh`.  `docs/building.md` explains that image and the build steps.
 
 ## Set up a repository
 
-Add two secrets in **Settings > Secrets and variables > Actions**:
-
-| Secret | Contents |
-|---|---|
-| `T2_FIRMWARE_URL` | URL of a tar or tar.gz archive that holds the vendor firmware files |
-| `T2_FIRMWARE_SHA256` | SHA-256 of that archive (recommended, catches a wrong or changed archive) |
-
-The AP6275P WiFi and Bluetooth firmware comes from the vendor.  It is not
-redistributable, so it is not in this repository (`rootfs/firmware/README.md`
-lists it).  The archive must hold these four files, at any depth:
-
-```
-fw_bcm43752a2_pcie_ag.bin
-clm_bcm43752a2_ag.blob
-nvram_AP6275P.txt
-BCM4362A2.hcd
-```
-
-The URL can be private and can carry a token.  The build does not republish the
-archive.  It does embed the firmware in the images, and the release notes say so.
-The workflow stops with a clear message when `T2_FIRMWARE_URL` is not set.
+The build embeds the vendor AP6275P WiFi and Bluetooth firmware, which is
+committed in `rootfs/firmware/brcm/` (`rootfs/firmware/README.md` lists it and
+explains why).  No secret is needed.
 
 Set **Settings > Actions > General > Workflow permissions** to **Read and write
 permissions**.  The release job needs write access to create the release.
@@ -59,7 +40,7 @@ git push origin v26.04.1
 The tag starts the **Release** workflow.  It:
 
 1. checks out the tag;
-2. downloads the vendor firmware archive and installs it;
+2. verifies the committed vendor firmware (build step 1, `rootfs/fetch.sh`);
 3. builds every artefact in the Docker image (`./docker-build.sh`);
 4. collects the release files and writes `SHA256SUMS`;
 5. stores them as a workflow artefact;
@@ -112,10 +93,10 @@ workflow and type the tag.
 
 Use the same commands as the workflow.  Run them from the repository root.
 
-1. Get the vendor firmware.  Use an existing `rootfs/firmware/`, or fetch it:
+1. Verify the committed vendor firmware:
 
 ```sh
-T2_FIRMWARE_URL=https://... T2_FIRMWARE_SHA256=... tools/ci-fetch-firmware.sh
+rootfs/fetch.sh
 ```
 
 2. Build everything:

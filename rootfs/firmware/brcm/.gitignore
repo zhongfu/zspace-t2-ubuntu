@@ -1,0 +1,9 @@
+# Build products of rootfs/fetch.sh.  The vendor-named blobs are the committed
+# ones; these copies are regenerated on every run.
+brcmfmac43752-pcie.bin
+brcmfmac43752-pcie.txt
+brcmfmac43752-pcie.clm_blob
+
+# The repository's top-level .gitignore drops *.bin (build outputs).  This one
+# is source: the mandatory brcmfmac firmware binary, committed here on purpose.
+!fw_bcm43752a2_pcie_ag.bin

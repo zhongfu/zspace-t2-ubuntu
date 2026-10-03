@@ -19,10 +19,10 @@ You need `git`, GNU make, and the `aarch64-linux-gnu-` cross toolchain. The
 shipped `Image` embeds the initramfs tree, and that tree carries the WiFi
 firmware the module needs at early probe, so build in this order:
 
-**firmware fetch → initramfs → kernel → u-boot → rootfs → installer image**
+**firmware verify → initramfs → kernel → u-boot → rootfs → installer image**
 
 ```sh
-rootfs/fetch.sh              # vendor WiFi/BT firmware
+rootfs/fetch.sh              # verify the committed WiFi/BT firmware
 rootfs/initramfs/build.sh    # -> build/initramfs
 kernel/fetch.sh              # clone mainline v7.3-rc5 into build/kernel
 kernel/build.sh              # apply patches, configure, build, install

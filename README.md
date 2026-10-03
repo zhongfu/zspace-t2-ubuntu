@@ -25,7 +25,7 @@ Not included: the vendor's proprietary applications (zfilev2, zalbumv2, znvr,
 |---|---|
 | `kernel/` | kernel patches, config, fetch and build scripts |
 | `u-boot/` | board defconfigs, device trees, patches, fetch and build scripts |
-| `rootfs/` | Ubuntu profile, initramfs, firmware fetch, build script |
+| `rootfs/` | Ubuntu profile, initramfs, firmware, build script |
 | `images/` | boot tree and installer image tools |
 | `lib/` | shared Python modules |
 | `tools/` | helpers for a live T2 |
@@ -37,7 +37,7 @@ You need a Linux x86-64 host, about 40 GB free, and the tools listed in
 `docs/building.md`. Build the initramfs before the kernel: it is embedded.
 
 ```sh
-rootfs/fetch.sh                             # vendor WiFi/BT firmware
+rootfs/fetch.sh                             # verify the committed WiFi/BT firmware
 rootfs/initramfs/build.sh                   # -> build/initramfs
 kernel/fetch.sh    &&  kernel/build.sh      # -> build/out/Image, rk3568-t2.dtb, modules/
 u-boot/fetch.sh    &&  u-boot/build.sh      # -> build/out/u-boot.itb, idbloader.img
@@ -54,10 +54,12 @@ front-panel button. See `docs/using.md`.
 
 ## Firmware
 
-The AP6275P WiFi and Bluetooth firmware comes from the vendor rootfs and is not
-redistributable. `rootfs/fetch.sh` copies it from a T2 that runs the vendor
-firmware, or from a vendor update package. Everything else the images need is
-redistributable or built from source.
+The AP6275P WiFi and Bluetooth firmware comes from the vendor rootfs. No
+redistributable source ships it: it is not in `linux-firmware`, and the Ubuntu
+firmware packages do not carry it. The four blobs are committed under
+`rootfs/firmware/brcm/` and embedded in the images. `rootfs/fetch.sh` verifies
+them, and can refresh them from a T2 or a vendor update package. Everything else
+the images need is redistributable or built from source.
 
 ## Documentation
 

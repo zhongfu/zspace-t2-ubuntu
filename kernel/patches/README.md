@@ -74,8 +74,9 @@ can enumerate before the root filesystem is switched in, put it in the
 | `brcmfmac43752-pcie.clm_blob` | `clm_bcm43752a2_ag.blob` |
 
 Only the `.bin` is mandatory (`txcap_blob` is optional and reported missing). The
-blobs are not redistributable and are not in this repository; `rootfs/fetch.sh`
-collects them from a running T2 or a vendor update. Also enable
+blobs are not redistributable; they are committed in `rootfs/firmware/brcm/`, and
+`rootfs/fetch.sh` verifies them and can refresh them from a running T2 or a
+vendor update. Also enable
 `CONFIG_BRCMFMAC_PCIE=y` — mainline's `BRCMFMAC_SDIO` alone will not bind this
 part, which is a PCIe device (`14e4:449d`), not SDIO.
 

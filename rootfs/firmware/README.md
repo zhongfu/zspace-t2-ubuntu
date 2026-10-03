@@ -1,9 +1,12 @@
 # Vendor firmware
 
 The AP6275P WiFi/BT module on the ZSpace T2 (Broadcom/Cypress BCM43752) needs
-firmware that is **not redistributable**: it is not in `linux-firmware`, only
-Rockchip and the module vendor ship it.  This directory is therefore empty in
-the repository; `rootfs/fetch.sh` fills it from a source that already has it.
+firmware that no redistributable source ships.  Checked 2026-10-03: upstream
+`linux-firmware` returns 404 for every BCM43752 file, and Ubuntu 26.04's
+`linux-firmware-broadcom-wireless` package ships `brcmfmac43602-*` but neither
+`43752` nor `BCM4362A2.hcd`.  The blobs therefore come from the vendor rootfs;
+they are committed in `brcm/` in this repository and embedded in the release
+images.  `rootfs/fetch.sh` verifies them and writes the mainline names.
 
 Everything else the images need is either committed
 (`rootfs/initramfs/firmware/`: the Realtek RTL8156B NIC blobs and the wireless
@@ -11,10 +14,10 @@ regulatory database) or built from source (BusyBox).
 
 ## Files
 
-`rootfs/fetch.sh` copies these four files into `rootfs/firmware/brcm/` and
-verifies their SHA-256.  All four come from the vendor rootfs directory
-`/system/etc/firmware/` (Rockchip's `bcmdhd` firmware directory; on the vendor
-image `/vendor/etc/firmware` is a symlink to it).
+The four files are committed in `brcm/`; `rootfs/fetch.sh` verifies their
+SHA-256 and writes the mainline names below.  All four come from the vendor
+rootfs directory `/system/etc/firmware/` (Rockchip's `bcmdhd` firmware
+directory; on the vendor image `/vendor/etc/firmware` is a symlink to it).
 
 | File | Size (B) | SHA-256 | Provenance |
 |---|---|---|---|
@@ -41,9 +44,11 @@ mainline `brcmfmac` asks for:
 there into the image.  `rootfs/initramfs/build.sh` copies the same blobs into
 the kernel's embedded initramfs for the early brcmfmac probe.
 
-## Sources
+## Refreshing from a newer vendor package
 
-`rootfs/fetch.sh` obtains the files from any one of:
+`rootfs/fetch.sh` with no arguments verifies the committed blobs and writes the
+mainline names; it needs no network.  To replace them from a newer vendor
+package, pass a source mode:
 
 * `--from-host root@HOST` - a T2 that still runs the vendor firmware, over
   SSH (`/system/etc/firmware/`).
@@ -52,7 +57,8 @@ the kernel's embedded initramfs for the early brcmfmac probe.
 * `--from-dir DIR` - a directory that already holds the files (a mounted
   vendor rootfs, or an OTA package extracted by hand).
 
-Run it before the initramfs and rootfs builds:
+Every source is verified against the SHA-256 table above before it is
+installed.  Run the script before the initramfs and rootfs builds:
 
 ```sh
 rootfs/fetch.sh --from-host root@192.168.1.50

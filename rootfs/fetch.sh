@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# Fetch the vendor (non-redistributable) AP6275P firmware for the ZSpace T2.
+# Install the vendor AP6275P (Broadcom/Cypress BCM43752) firmware for the T2.
 #
-# The Broadcom/Cypress BCM43752 blobs are not in linux-firmware and may not be
-# redistributed, so they are not in this repository.  This script copies them
-# into rootfs/firmware/brcm/ from a T2 that still runs the vendor firmware, from
-# a vendor .zspace update/OTA package, or from a directory that already holds
-# them, and verifies every SHA-256 (rootfs/firmware/README.md lists them).
+# The four vendor blobs are committed in rootfs/firmware/brcm/ because no
+# redistributable source ships them: they are not in linux-firmware, and the
+# Ubuntu linux-firmware packages do not carry them (rootfs/firmware/README.md).
 #
-# It also writes the mainline brcmfmac names (brcmfmac43752-pcie.{bin,txt,clm_blob}),
-# so both the rootfs hooks and the embedded initramfs find what they ask for.
+# With no arguments this script verifies the committed blobs against their
+# SHA-256 and writes the mainline brcmfmac names
+# (brcmfmac43752-pcie.{bin,txt,clm_blob}), so the rootfs hooks and the embedded
+# initramfs find what they ask for:
+#   rootfs/fetch.sh
 #
-# Run it before the initramfs and rootfs builds:
+# To refresh the blobs from a newer vendor package, pass a source mode.  Every
+# file is still verified against the same SHA-256:
 #   rootfs/fetch.sh --from-host root@192.168.1.50
 #   rootfs/fetch.sh --ota https://example.invalid/t2/update.zspace
 #   rootfs/fetch.sh --from-dir /mnt/vendor-rootfs/system/etc/firmware
@@ -31,14 +33,17 @@ arg_dir=""
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [-h|--help] --from-host HOST | --ota URL | --from-dir DIR
+Usage: $(basename "$0") [-h|--help] [--from-host HOST | --ota URL | --from-dir DIR]
 
-Copy and verify the vendor AP6275P firmware into rootfs/firmware/brcm/.
+Verify and install the vendor AP6275P firmware into rootfs/firmware/brcm/.
+
+With no source the committed blobs in $dest/brcm/ are verified and their
+mainline brcmfmac copies are written.
 
 Options:
-  --from-host [user@]HOST  copy from a T2 that runs the vendor firmware over SSH
-  --ota URL                read the files from a vendor .zspace OTA package
-  --from-dir DIR           copy from a directory that already holds them
+  --from-host [user@]HOST  refresh from a T2 that runs the vendor firmware over SSH
+  --ota URL                refresh from a vendor .zspace OTA package
+  --from-dir DIR           refresh from a directory that already holds the files
   --src-dir DIR            firmware directory on the device (default: $src_dir)
   --dest DIR               destination root (default: $dest)
   --force                  re-copy even when a verified file is already there
@@ -64,8 +69,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$mode" ]; then
-    usage
-    exit 2
+    mode=local
 fi
 
 # filename -> sha256 (rootfs/firmware/README.md)
@@ -87,7 +91,7 @@ for f in "${files[@]}"; do
         missing=1
     fi
 done
-if [ "$missing" = 0 ] && [ "$force" = 0 ]; then
+if [ "$missing" = 0 ] && [ "$force" = 0 ] && [ "$mode" != local ]; then
     echo "rootfs/fetch: firmware already present and verified in $dest/brcm/ - nothing to do"
     echo "              (use --force to refresh)"
     exit 0
@@ -99,6 +103,13 @@ mkdir -p "$tmp/got" "$dest/brcm"
 
 for m in $mode; do
     case "$m" in
+        local)
+            echo "== using the committed firmware in $dest/brcm =="
+            for f in "${files[@]}"; do
+                [ -f "$dest/brcm/$f" ] || die "$dest/brcm/$f is missing; check out the repository, or refresh with --from-host/--ota/--from-dir"
+                cp -f "$dest/brcm/$f" "$tmp/got/$f"
+            done
+            ;;
         host)
             echo "== fetching from $arg_host:$src_dir =="
             for f in "${files[@]}"; do

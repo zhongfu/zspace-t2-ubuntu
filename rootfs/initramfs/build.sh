@@ -3,7 +3,7 @@
 # Build the ZSpace T2 bring-up initramfs into <repo>/build/initramfs.
 #
 # The kernel embeds this tree (CONFIG_INITRAMFS_SOURCE), so kernel/build.sh
-# needs it before it runs: firmware fetch -> initramfs -> kernel -> u-boot ->
+# needs it before it runs: firmware verify -> initramfs -> kernel -> u-boot ->
 # rootfs -> installer image.
 #
 # Steps:
@@ -17,8 +17,8 @@
 #   6. copy init, installer.sh and the firmware tree into place
 #
 # The 1.2 MB busybox binary, the applet symlinks and the zstd binary are build
-# outputs, not repository content.  The Broadcom WiFi/BT blobs are copied from
-# rootfs/firmware/ (populated by rootfs/fetch.sh); the RTL NIC firmware and
+# outputs, not repository content.  The Broadcom WiFi/BT blobs are committed in
+# rootfs/firmware/ (verified by rootfs/fetch.sh); the RTL NIC firmware and
 # the regulatory database are committed under rootfs/initramfs/firmware/.
 set -eu
 
@@ -79,12 +79,13 @@ command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || die \
     "${CROSS_COMPILE}gcc is not on PATH; install an aarch64 cross toolchain \
 or set CROSS_COMPILE"
 
-# The Broadcom WiFi/BT firmware is not redistributable, so it is fetched, not
-# committed.  The initramfs carries it for the early brcmfmac probe.
+# The Broadcom WiFi/BT firmware is committed in rootfs/firmware/brcm/ (no
+# redistributable source ships it).  The initramfs carries it for the early
+# brcmfmac probe.
 fw_blobs=$repo/rootfs/firmware/brcm
 if [ ! -d "$fw_blobs" ]; then
-    die "$fw_blobs is missing; run rootfs/fetch.sh first (it copies the
-vendor Broadcom firmware from a T2 or a vendor update package)"
+    die "$fw_blobs is missing; restore the committed files (git checkout), or
+      refresh them with rootfs/fetch.sh --from-host/--ota/--from-dir"
 fi
 
 # --------------------------------------------------------------------- source
@@ -195,7 +196,7 @@ shopt -s nullglob
 blobs=("$fw_blobs"/*.bin "$fw_blobs"/*.txt "$fw_blobs"/*.clm_blob
        "$fw_blobs"/*.hcd)
 shopt -u nullglob
-[ ${#blobs[@]} -gt 0 ] || die "$fw_blobs holds no vendor firmware; run rootfs/fetch.sh"
+[ ${#blobs[@]} -gt 0 ] || die "$fw_blobs holds no vendor firmware; restore the committed files"
 cp -f "${blobs[@]}" "$out/lib/firmware/brcm/"
 chmod 644 "$out/lib/firmware/rtl_nic/"* "$out/lib/firmware/"*.db* \
        "$out/lib/firmware/brcm/"* 2>/dev/null || true

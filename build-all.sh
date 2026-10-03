@@ -2,7 +2,7 @@
 #
 # Build every artefact, in the order docs/building.md documents.
 #
-#   1  rootfs/fetch.sh            vendor WiFi/BT firmware    (once, not automated)
+#   1  rootfs/fetch.sh            verify the committed WiFi/BT firmware
 #   2  rootfs/initramfs/build.sh  -> build/initramfs
 #   3  kernel/fetch.sh            -> build/kernel
 #   4  kernel/build.sh            -> build/out/Image, rk3568-t2.dtb, modules/
@@ -26,9 +26,9 @@
 # Steps can be selected: --only, --skip, --from, --to, --list.  For example,
 # `--only 6,8` rebuilds U-Boot and the installer image only.
 #
-# Step 1 cannot be automated: the vendor firmware is not distributable, so it
-# comes from a T2 that still runs the vendor firmware, or from a vendor update
-# package.  This script reports it when it is missing instead of guessing.
+# Step 1 verifies the vendor WiFi/BT firmware committed in
+# rootfs/firmware/brcm/ and writes the mainline names; it needs no network.
+# This script reports a missing blob instead of guessing.
 #
 # Usage: build-all.sh [--only N[,N] | --skip N | --from N | --to N] [-h|--help|--list]
 set -eu
@@ -54,7 +54,7 @@ Options:
   -h, --help     show this help
 
 Steps:
-  1  vendor firmware      rootfs/fetch.sh (external; the tree is checked)
+  1  vendor firmware      rootfs/fetch.sh (verifies the committed blobs)
   2  initramfs            rootfs/initramfs/build.sh    (stamped)
   3  kernel tree          kernel/fetch.sh
   4  kernel               kernel/build.sh              (stamped)
@@ -212,23 +212,12 @@ echo "build-all: steps$selected (of 1..8)"
 
 export JOBS=${JOBS:-$(nproc)}
 
-# The firmware check is a precondition of step 1 (it reports the tree) and of
-# step 7 (rootfs/build.sh stops without it); a run that selects neither does not
-# need the firmware.
-if wanted 1 || wanted 7; then
-    fw=rootfs/firmware/brcm/fw_bcm43752a2_pcie_ag.bin
-    if [ ! -f "$fw" ]; then
-        echo "build-all: the vendor WiFi/BT firmware is missing: $fw" >&2
-        echo "           fetch it once from a T2, or from a vendor update package:" >&2
-        echo "             rootfs/fetch.sh --from-host root@<t2>" >&2
-        echo "             rootfs/fetch.sh --ota <url>" >&2
-        exit 1
-    fi
-fi
-
 if wanted 1; then
     echo "== 1/8 vendor firmware =="
-    echo "  rootfs/firmware/: $(find rootfs/firmware -type f | wc -l) file(s)"
+    # Verifies the committed blobs and writes the brcmfmac driver-named copies
+    # that the initramfs (step 2) and hooks/50 read.  Offline and idempotent.
+    # rootfs/build.sh (step 7) runs it too, so a step-7-only run is covered.
+    rootfs/fetch.sh
 else
     echo "-- 1/8 vendor firmware: not selected"
 fi

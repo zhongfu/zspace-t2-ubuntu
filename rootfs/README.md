@@ -8,7 +8,7 @@ board support files the bring-up needs.  It has four parts:
 | `profiles/t2-base/` | the profile: the Ubuntu base tarball, the package list, the overlay files and the build hooks |
 | `packages/t2-utils/` | the board userspace as a Debian package: the payload tree, its control metadata and `build.sh` |
 | `initramfs/` | the bring-up initramfs source (BusyBox, `init`, the card installer, firmware, build script) |
-| `firmware/` | where `fetch.sh` puts the non-redistributable vendor WiFi/BT blobs |
+| `firmware/` | the committed vendor WiFi/BT blobs and the script that verifies them |
 
 `t2-distro.py` turns a profile into `build/rootfs/rootfs.ext4`; `build.sh` runs
 the whole flow.  The shared pipeline code lives once at `<repo>/lib/`
@@ -193,14 +193,16 @@ come from `firmware/` (see below).
 
 ## Firmware
 
-The AP6275P module (Broadcom BCM43752) needs firmware that is **not
-redistributable** and not in `linux-firmware`, so it is not in this repository.
-`fetch.sh` copies it from a T2 that runs the vendor firmware, from a vendor
-`.zspace` OTA package, or from a directory that already holds it, verifies
-every SHA-256 (documented in `firmware/README.md`), and writes the mainline
-`brcmfmac` names alongside the vendor ones.  The rootfs build stops with a clear
-message when the firmware is missing.  Everything else is committed (the RTL
-NIC blobs, the regulatory database) or built from source (BusyBox).
+The AP6275P module (Broadcom BCM43752) needs firmware that no redistributable
+source ships: it is not in `linux-firmware`, and the Ubuntu firmware packages do
+not carry it.  The four vendor blobs are committed in `firmware/brcm/` and
+embedded in the images.  `fetch.sh` verifies every SHA-256 (documented in
+`firmware/README.md`), writes the mainline `brcmfmac` names alongside the vendor
+ones, and can refresh the blobs from a T2 that runs the vendor firmware, from a
+vendor `.zspace` OTA package, or from a directory that already holds them.  The
+rootfs build stops with a clear message when the firmware is missing.
+Everything else is committed (the RTL NIC blobs, the regulatory database) or
+built from source (BusyBox).
 
 ## Build
 
@@ -209,12 +211,12 @@ Requirements: a Linux x86-64 host, the `aarch64-linux-gnu-` cross toolchain,
 `mke2fs`, `debugfs`, `e2fsck`).  No root is needed: the build uses proot +
 `qemu-user-static`, fetched into `build/`.
 
-Build order: **firmware fetch -> initramfs -> kernel -> u-boot -> rootfs ->
+Build order: **firmware verify -> initramfs -> kernel -> u-boot -> rootfs ->
 installer image**.  The kernel embeds `build/initramfs`, so the initramfs must
 exist before `kernel/build.sh`.
 
 ```sh
-rootfs/fetch.sh --from-host root@192.168.1.50   # vendor firmware
+rootfs/fetch.sh                                 # verify the committed firmware
 rootfs/build.sh                                 # -> build/out/rootfs.ext4(.zst)
 ```
 

@@ -63,4 +63,3 @@ CI runs these from `.github/workflows/`.  `docs/releasing.md` explains the flow.
 | Tool | One line |
 |---|---|
 | `collect-release-artifacts.sh` | copy a finished `build/out/` into the release files, find the `t2-utils` `.deb` by glob, write `SHA256SUMS` and the notes file list |
-| `ci-fetch-firmware.sh` | download the vendor firmware archive from `T2_FIRMWARE_URL` and install it with `rootfs/fetch.sh --from-dir` |

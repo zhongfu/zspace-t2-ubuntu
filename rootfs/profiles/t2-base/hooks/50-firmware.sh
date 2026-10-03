@@ -1,11 +1,13 @@
 #!/bin/sh
 # WiFi / Bluetooth firmware, plus the RTL8156B NIC's firmware patch.
 #
-# The AP6275P (BCM43752) blob is a Broadcom/Cypress part that only Rockchip and
-# AMPak ship - it is NOT in linux-firmware.  brcmfmac needs the .bin (mandatory)
-# plus .txt; the .clm_blob is optional.  The module probes at ~7 s, before
-# switch_root, so the same files must also live in the kernel's embedded
-# initramfs (rootfs/initramfs/) - this hook only covers the rootfs.
+# The AP6275P (BCM43752) blob is a Broadcom/Cypress part that no redistributable
+# source ships: it is NOT in linux-firmware, and the Ubuntu firmware packages do
+# not carry it.  It comes from the vendor rootfs and is committed in
+# rootfs/firmware/brcm/.  brcmfmac needs the .bin (mandatory) plus .txt; the
+# .clm_blob is optional.  The module probes at ~7 s, before switch_root, so the
+# same files must also live in the kernel's embedded initramfs
+# (rootfs/initramfs/) - this hook only covers the rootfs.
 #
 # Firmware provenance (patches/README.md):
 #   fw_bcm43752a2_pcie_ag.bin -> brcmfmac43752-pcie.bin

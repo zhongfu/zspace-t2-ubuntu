@@ -3,7 +3,7 @@
 # Build the Ubuntu rootfs for the ZSpace T2.
 #
 # Steps:
-#   1. make sure the vendor AP6275P firmware is present (run rootfs/fetch.sh)
+#   1. verify the committed vendor AP6275P firmware (rootfs/fetch.sh)
 #   2. build the bring-up initramfs into build/initramfs when it is missing
 #   3. stage the firmware tree the profile's hooks read (build/firmware)
 #   4. run rootfs/t2-distro.py -> build/rootfs/rootfs.ext4 (+ manifest)
@@ -12,7 +12,7 @@
 # The zstd copy is what images/build-installer.sh puts into the installer
 # payload (T2-FLASH/rootfs.ext4.zst).
 #
-# Build order: firmware fetch -> initramfs -> kernel -> u-boot -> rootfs ->
+# Build order: firmware verify -> initramfs -> kernel -> u-boot -> rootfs ->
 # installer image.  This script needs firmware and (unless --dry-run) the
 # built kernel tree, so run kernel/fetch.sh and kernel/build.sh first.
 set -eu
@@ -51,7 +51,7 @@ Options:
   --firmware-from-host H   fetch missing firmware from a T2 over SSH
   --firmware-ota URL       fetch missing firmware from a .zspace OTA package
   --firmware-from-dir DIR  fetch missing firmware from a local directory
-  --force-firmware         re-run the firmware fetch even when present
+  --force-firmware         re-run the firmware step even when present
   -j, --jobs N             make/apt jobs (default: $jobs)
   -h, --help               show this help
 
@@ -82,26 +82,22 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 [ -d "$profile" ] || die "profile $profile is missing"
 
 # ------------------------------------------------------------ 1. firmware
-fw_ok() {
-    local f
-    for f in fw_bcm43752a2_pcie_ag.bin clm_bcm43752a2_ag.blob \
-             nvram_AP6275P.txt BCM4362A2.hcd; do
-        [ -f "$here/firmware/brcm/$f" ] || return 1
-    done
-    return 0
-}
-
-if [ "$dry" = 0 ] && ! fw_ok; then
-    if [ ${#fw_args[@]} -gt 0 ]; then
-        echo "== firmware missing; fetching =="
-        "$here/fetch.sh" "${fw_args[@]}"
+# fetch.sh verifies the four committed vendor blobs against the sha256 table in
+# rootfs/firmware/README.md and writes the brcmfmac driver-named copies mainline
+# asks for.  Step 3 stages that directory, so the copies have to exist even when
+# the vendor blobs are already in place - always run it.  It is offline and
+# idempotent, and it is what catches a corrupted or hand-edited blob.
+if [ "$dry" = 1 ]; then
+    echo "[dry] would verify rootfs/firmware/brcm and write the brcmfmac names"
+elif [ ${#fw_args[@]} -gt 0 ]; then
+    echo "== refreshing the vendor firmware =="
+    if [ "$force_firmware" = 1 ]; then
+        "$here/fetch.sh" --force "${fw_args[@]}"
     else
-        die "vendor firmware missing from rootfs/firmware/brcm/; run
-     rootfs/fetch.sh --from-host root@<t2>   (or --ota <url>, --from-dir <dir>)"
+        "$here/fetch.sh" "${fw_args[@]}"
     fi
-fi
-if [ "$force_firmware" = 1 ] && [ ${#fw_args[@]} -gt 0 ] && [ "$dry" = 0 ]; then
-    "$here/fetch.sh" --force "${fw_args[@]}"
+else
+    "$here/fetch.sh"
 fi
 
 # ------------------------------------------------------------ 2. initramfs
