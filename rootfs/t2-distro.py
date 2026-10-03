@@ -12,9 +12,17 @@ ext4 image without host root and without a board:
     packages  policy-rc.d + apt-get update && apt-get install, inside the chroot
     overlay   overlay/** copied verbatim into the stage
     hooks     hooks/NN-*.sh, ascending, inside the chroot
+    modules   the FIT kernel's modules, installed into the stage
     image     fakeroot + mke2fs -d -> <out>/<artifact>
     verify    file-based proof of the finished image (never a boot)
     manifest  manifest.json + SHA256SUMS
+
+Stages that modify the stage carry a stamp under <out>/stage/.t2-stamps/ (the
+base tarball sha, the package selection sha, the overlay tree hash, the hooks
+hash, the kernel config/release).  A rerun skips a stage whose stamp matches,
+and re-runs every later stage that consumed a rebuilt one; changing the base
+tarball wipes the whole stage, stamps included.  The stamps are lifted out
+around mke2fs so they never ship in the image.
 
 Reused from the repo's shared pipeline code, lib/t2-build.py (loaded with
 importlib - the name has a hyphen): Runner, build_env, sha256_file,
@@ -101,6 +109,11 @@ RESOLV_CONF = Path("/etc/resolv.conf")
 # The profile's inputs that hooks read through the read-only /t2-profile
 # bind (image.json: firmware_src is a repo-root relative path).
 PROFILE_MNT = "/t2-profile"
+# Per-stage freshness stamps, kept *inside* <out>/stage so that wiping the
+# stage (a changed base tarball) also drops them and forces every stage to
+# re-run.  They are build metadata, not image content, so the image stage lifts
+# them out around mke2fs and puts them back afterwards.
+STAMP_DIR = ".t2-stamps"
 # enablement the image must carry; verified as symlinks under
 # /etc/systemd/system/*.wants/ (file-based, never started - see
 # distro/README.md).
@@ -188,6 +201,130 @@ def short(p: Path) -> str:
 
 def human(n: int) -> str:
     return f"{n:,} B ({n / 2**20:.1f} MiB)"
+
+
+# --------------------------------------------------------------------------
+# per-stage freshness stamps
+# --------------------------------------------------------------------------
+def tree_hash(roots) -> str:
+    """sha256 over a sorted (path, content) listing of `roots`.
+
+    Content only: touching a file's mtime leaves the hash alone.  Symlinks
+    contribute their target, so a retargeted link counts as a change.
+    """
+    entries = []
+    for root in roots:
+        root = Path(root)
+        if root.is_symlink():
+            entries.append((str(root), "link", os.readlink(root)))
+        elif root.is_file():
+            entries.append((str(root), "file", sha256_file(root)))
+        elif root.is_dir():
+            for p in root.rglob("*"):
+                if p.is_symlink():
+                    entries.append((str(p.relative_to(root)), "link",
+                                    os.readlink(p)))
+                elif p.is_file():
+                    entries.append((str(p.relative_to(root)), "file",
+                                    sha256_file(p)))
+    h = hashlib.sha256()
+    for rel, kind, val in sorted(entries):
+        h.update(f"{rel}\0{kind}\0{val}\0".encode())
+    return h.hexdigest()
+
+
+def ko_hash(tree: Path) -> str:
+    """sha256 over a kernel tree's built modules (content, sorted).
+
+    Used by the modules stage: a kernel patch edit leaves `.config` and the
+    release string (`git describe --dirty`) identical, so the built .ko are the
+    only thing that shows the tree changed.
+    """
+    return tree_hash([p for p in tree.rglob("*.ko") if p.is_file()])
+
+
+def modules_stamp(tree: Path, rel: str) -> str:
+    """The modules stage's freshness stamp: config, release, tree, built .ko.
+
+    A kernel patch edit leaves `.config` and the release string (`git describe
+    --dirty`) identical, so the built modules are the only thing that shows the
+    tree changed - without them the stage would ship stale .ko into the image.
+    """
+    return f"{sha256_file(tree / '.config')} {rel} {tree} {ko_hash(tree)}"
+
+
+def stamp_path(stage: Path, name: str) -> Path:
+    return stage / STAMP_DIR / name
+
+
+def stamp_read(stage: Path, name: str) -> str:
+    p = stamp_path(stage, name)
+    try:
+        return p.read_text().strip() if p.is_file() else None
+    except OSError:
+        return None
+
+
+def stamp_write(stage: Path, name: str, value: str) -> None:
+    p = stamp_path(stage, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(value + "\n")
+
+
+def prior_manifest(out: Path) -> dict:
+    """The last finished build's manifest, or {} when there is none.
+
+    A stage built before stamping existed carries no stamp; the manifest is
+    that build's own record of the base tarball and the package selection, so
+    a matching stage can be adopted instead of re-extracted and re-apt.
+    """
+    p = out / "manifest.json"
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def overlay_hash(prof: "Profile") -> str:
+    """Hash of every overlay layer's tree (content + symlink targets)."""
+    return tree_hash(prof.overlays or [])
+
+
+def hooks_hash(prof: "Profile") -> str:
+    """Hash of the hooks that will run and the inputs they read.
+
+    Every layer's hook body (the deepest layer wins a shared name), the hook
+    environment, and the firmware tree image.json points at - hook 50 copies
+    it into /lib/firmware.  A hook's *result* also depends on the packages and
+    the overlay that ran before it, so the driver re-runs hooks whenever either
+    of those stages rebuilt.
+    """
+    h = hashlib.sha256()
+    for name in prof.hooks:
+        for layer in reversed(prof.layers):
+            f = layer / "hooks" / name
+            if f.is_file():
+                h.update(f"{name}\0".encode() + f.read_bytes() + b"\0")
+                break
+    h.update(json.dumps(prof.hook_env(), sort_keys=True).encode() + b"\0")
+    src = prof.image.get("firmware_src")
+    if src:
+        fw = (ROOT / src).resolve()
+        h.update(tree_hash([fw] if fw.is_dir() else []).encode() + b"\0")
+    return h.hexdigest()
+
+
+def base_facts(args, prof: Profile, tarball: Path = None) -> None:
+    if tarball is None:
+        cache = Path(args.base_cache).resolve()
+        tarball = cache / Path(urlparse(prof.base["url"]).path).name
+    LAST["base"] = {"url": prof.base["url"], "sha256": prof.base["sha256"],
+                    "tarball": str(tarball),
+                    "distro": prof.base.get("distro"),
+                    "release": prof.base.get("release"),
+                    "arch": prof.base.get("arch")}
 
 
 # --------------------------------------------------------------------------
@@ -501,22 +638,45 @@ def ensure_tarball(args, R: Runner, prof: Profile) -> Path:
     return local
 
 
-def stage_base(args, R: Runner, prof: Profile, stage: Path) -> None:
+def stage_base(args, R: Runner, prof: Profile, stage: Path) -> bool:
+    """Extract the pinned tarball; True when the stage tree was (re)written.
+
+    A stage whose stamp matches the pinned tarball sha is left untouched.  A
+    stage with no stamp that the last manifest recorded as built from this
+    tarball is adopted (it predates stamping).  Anything else is wiped: a
+    changed base tarball invalidates every later stage, so the whole tree is
+    rebuilt from scratch.
+    """
     log("-- base: pinned tarball -> stage tree --")
     tarball = ensure_tarball(args, R, prof)
+    want = prof.base["sha256"]
     if R.dry:
-        log(f"  [dry] would extract {tarball.name} into {stage}")
-        return
+        log(f"  [dry] would extract {tarball.name} into {stage} unless fresh")
+        return False
+    have = stamp_read(stage, "base")
+    if have == want:
+        log(f"  [skip] base: unchanged ({short(stamp_path(stage, 'base'))})")
+        base_facts(args, prof, tarball)
+        return False
+    if stage.is_dir() and have is None \
+            and (stage / "etc/os-release").is_file() \
+            and (prior_manifest(stage.parent).get("base") or {}).get(
+                "sha256") == want:
+        log("  [adopt] base stamp from "
+            f"{short(stage.parent / 'manifest.json')}: unchanged")
+        stamp_write(stage, "base", want)
+        base_facts(args, prof, tarball)
+        return False
     if stage.exists():
+        log(f"  base stamp missing or stale for {want[:12]}; "
+            f"wiping {short(stage)}")
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
     # plain user extraction: ownership is fixed under fakeroot at image time
     R.run(["tar", "-xzf", str(tarball), "-C", str(stage)])
-    LAST["base"] = {"url": prof.base["url"], "sha256": prof.base["sha256"],
-                    "tarball": str(tarball),
-                    "distro": prof.base.get("distro"),
-                    "release": prof.base.get("release"),
-                    "arch": prof.base.get("arch")}
+    stamp_write(stage, "base", want)
+    base_facts(args, prof, tarball)
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -645,20 +805,43 @@ def tool_facts(proot: Path, qemu: Path) -> dict:
 # --------------------------------------------------------------------------
 # stage: packages
 # --------------------------------------------------------------------------
-def stage_packages(args, R: Runner, prof: Profile, ch: Chroot) -> None:
+def stage_packages(args, R: Runner, prof: Profile, ch: Chroot) -> bool:
+    """apt install the profile's selections; True when it ran.
+
+    Skipped when the package selection's stamp matches - the install (35
+    selections under proot/qemu) is the expensive half of a rootfs rebuild.
+    """
+    stage = ch.stage
+    want = sha256_files(prof.packages_files)
     log(f"-- packages: {len(prof.packages)} selections in the chroot --")
     if args.backend == "none":
         log("  [skip] backend none: nothing to install")
-        return
+        return False
     if R.dry:
         log("  [dry] would write usr/sbin/policy-rc.d (exit 101)")
-    else:
-        policy = ch.stage / "usr/sbin/policy-rc.d"
-        policy.parent.mkdir(parents=True, exist_ok=True)
-        policy.write_text("#!/bin/sh\n# build-time: never start a service "
-                          "here\nexit 101\n")
-        policy.chmod(0o755)
-        log(f"  wrote {policy} (exit 101)")
+        log(f"  [dry] would apt-get install {len(prof.packages)} selections")
+        return False
+    have = stamp_read(stage, "packages")
+    adopt = have is None and packages_installed(stage, prof.packages) \
+        and (prior_manifest(stage.parent).get("packages") or {}).get(
+            "sha256") == want
+    if have == want or adopt:
+        if adopt:
+            log("  [adopt] packages stamp from "
+                f"{short(stage.parent / 'manifest.json')}: unchanged")
+            stamp_write(stage, "packages", want)
+        log(f"  [skip] packages: unchanged "
+            f"({short(stamp_path(stage, 'packages'))})")
+        LAST["packages"] = {"list": prof.packages, "sha256": want,
+                            "count": len(prof.packages), "recommends": True}
+        return False
+
+    policy = stage / "usr/sbin/policy-rc.d"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text("#!/bin/sh\n# build-time: never start a service "
+                      "here\nexit 101\n")
+    policy.chmod(0o755)
+    log(f"  wrote {policy} (exit 101)")
 
     # -j buys parallel HTTP fetches; dpkg itself unpacks serially
     apt_opts = (f"-o Acquire::Queue-Mode=access "
@@ -672,22 +855,15 @@ def stage_packages(args, R: Runner, prof: Profile, ch: Chroot) -> None:
     # Every selection must be fully configured, not merely unpacked: a
     # half-configured systemd is exactly the kind of damage an image that
     # looks fine on disk would hide.
-    if R.dry:
-        log(f"  [dry] would check that all {len(prof.packages)} selections "
-            "are configured")
-    else:
-        # Every selection must be fully configured, not merely unpacked: a
-        # half-configured systemd is exactly the kind of damage an image that
-        # looks fine on disk would hide.
-        left = unfinished_packages(ch.stage)
-        if left:
-            die(f"{len(left)} package(s) left unconfigured after the install: "
-                + ", ".join(left[:10]))
-        log(f"  all {len(prof.packages)} selections installed and configured")
-    LAST["packages"] = {"list": prof.packages,
-                        "sha256": sha256_files(prof.packages_files),
-                        "count": len(prof.packages),
-                        "recommends": True}
+    left = unfinished_packages(stage)
+    if left:
+        die(f"{len(left)} package(s) left unconfigured after the install: "
+            + ", ".join(left[:10]))
+    log(f"  all {len(prof.packages)} selections installed and configured")
+    stamp_write(stage, "packages", want)
+    LAST["packages"] = {"list": prof.packages, "sha256": want,
+                        "count": len(prof.packages), "recommends": True}
+    return True
 
 
 def unfinished_packages(stage: Path) -> list:
@@ -706,14 +882,45 @@ def unfinished_packages(stage: Path) -> list:
     return out
 
 
+def packages_installed(stage: Path, packages) -> bool:
+    """True when every selection is "install ok installed" in the stage.
+
+    Used to adopt a packages stamp from the previous manifest: a stage that was
+    just re-extracted from the base tarball has no selections yet, so adoption
+    must not skip the install.
+    """
+    status = stage / "var/lib/dpkg/status"
+    if not status.is_file():
+        return False
+    want, found, name, ok = set(packages), set(), None, False
+    for line in status.read_text(errors="replace").splitlines():
+        if line.startswith("Package: "):
+            if name in want and ok:
+                found.add(name)
+            name, ok = line[9:].strip(), False
+        elif line.startswith("Status: "):
+            ok = line == "Status: install ok installed"
+    if name in want and ok:
+        found.add(name)
+    return found >= want
+
+
 # --------------------------------------------------------------------------
 # stage: overlay
 # --------------------------------------------------------------------------
-def stage_overlay(args, R: Runner, prof: Profile, stage: Path) -> None:
+def stage_overlay(args, R: Runner, prof: Profile, stage: Path,
+                  force: bool = False) -> bool:
+    """Copy the profile overlay into the stage; True when it ran.
+
+    Skipped when the overlay tree's hash matches and no earlier stage rebuilt
+    the tree (`force`); a packages rebuild can overwrite overlay files, so the
+    driver forces this stage whenever packages ran.
+    """
     log("-- overlay: profile files, modes preserved --")
     if not prof.overlays:
         log("  [skip] no overlay/ in the profile")
-        return
+        return False
+    want = overlay_hash(prof)
     # cp -a only ever adds and overwrites, so on a *reused* stage a file the
     # profile has since deleted would survive silently and ship.  The ledger
     # of paths the previous overlay run wrote is what makes that detectable:
@@ -726,6 +933,13 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path) -> None:
     for ov in prof.overlays:
         shipped |= {str(p.relative_to(ov)) for p in ov.rglob("*")
                     if p.is_file() or p.is_symlink()}
+    if not R.dry and not force and stamp_read(stage, "overlay") == want:
+        log(f"  [skip] overlay: unchanged "
+            f"({short(stamp_path(stage, 'overlay'))})")
+        LAST["overlay"] = {"source": str(prof.overlay), "files": len(shipped),
+                           "sources": [str(o) for o in prof.overlays],
+                           "pruned": []}
+        return False
     pruned = prune_overlay(ledger, stage, shipped) if ledger.is_file() else []
     if R.dry:
         for ov in prof.overlays:
@@ -733,7 +947,7 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path) -> None:
         if pruned:
             log(f"  [dry] would prune {len(pruned)} stale overlay file(s): "
                 + ", ".join(pruned))
-        return
+        return False
     n = len(shipped)
     # parent layers first, so an extending profile's file always wins
     for ov in prof.overlays:
@@ -746,9 +960,11 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path) -> None:
     if pruned:
         log(f"  pruned {len(pruned)} file(s) the profile no longer ships: "
             + ", ".join(pruned))
+    stamp_write(stage, "overlay", want)
     LAST["overlay"] = {"source": str(prof.overlay), "files": n,
                        "sources": [str(o) for o in prof.overlays],
                        "pruned": pruned}
+    return True
 
 
 def prune_overlay(ledger: Path, stage: Path, shipped: set) -> list:
@@ -772,18 +988,34 @@ def prune_overlay(ledger: Path, stage: Path, shipped: set) -> list:
 # --------------------------------------------------------------------------
 # stage: hooks
 # --------------------------------------------------------------------------
-def stage_hooks(args, R: Runner, prof: Profile, ch: Chroot) -> None:
+def stage_hooks(args, R: Runner, prof: Profile, ch: Chroot,
+                force: bool = False) -> bool:
+    """Run the profile's hooks in the chroot; True when it ran.
+
+    Skipped when the hooks hash matches and no earlier stage rebuilt the tree
+    (`force`): a package or overlay rebuild changes what a hook sees.
+    """
+    stage = ch.stage
     log(f"-- hooks: {len(prof.hooks)} scripts, ascending --")
     if args.backend == "none":
         log("  [skip] backend none: hooks need a chroot")
-        return
+        return False
+    want = hooks_hash(prof)
+    if not R.dry and not force and stamp_read(stage, "hooks") == want:
+        log(f"  [skip] hooks: unchanged "
+            f"({short(stamp_path(stage, 'hooks'))})")
+        LAST["hooks"] = list(prof.hooks)
+        return False
     done = []
     for name in prof.hooks:
         path = f"{PROFILE_MNT}/hooks/{name}"
         log(f"  {name}")
         ch.run(R, f'set -e\nsh "{path}"')
         done.append(name)
+    if not R.dry:
+        stamp_write(stage, "hooks", want)
     LAST["hooks"] = done
+    return not R.dry
 
 
 
@@ -807,18 +1039,22 @@ def image_kernel_version(tree: Path) -> str:
     return m.group(1) if m else ""
 
 
-def stage_modules(args, R: Runner, stage: Path) -> None:
+def stage_modules(args, R: Runner, stage: Path) -> bool:
     """Ship the FIT kernel's modules in the image (host-side cross build).
 
     Runs on the host, never in the chroot: `make` here is the cross compiler,
     and `modules_install` only copies files plus `depmod -b <stage>`, which is
     architecture agnostic.  The release has to equal the FIT kernel's, or the
     board silently autoloads nothing.
+
+    Skipped when the kernel config, release and built .ko hash match and the
+    stage still carries the installed modules; a re-extracted base drops the
+    stamp with the tree, so this runs again.
     """
     log("-- modules: FIT kernel modules -> stage --")
     if args.no_modules:
         log("  [skip] --no-modules")
-        return
+        return False
     tree = args.kernel_tree.resolve()
     if R.dry:
         R.run(["make", "-s", "-C", str(tree), "ARCH=arm64", "kernelrelease"],
@@ -828,7 +1064,7 @@ def stage_modules(args, R: Runner, stage: Path) -> None:
         R.run(["make", "-C", str(tree), "ARCH=arm64",
                f"INSTALL_MOD_PATH={stage}", "modules_install"],
               env=build_env())
-        return
+        return False
     if not (tree / ".config").exists():
         die(f"{tree}/.config is missing: no kernel to take modules from")
     env = build_env()             # t2-build.py's cross environment
@@ -840,6 +1076,13 @@ def stage_modules(args, R: Runner, stage: Path) -> None:
         die(f"{tree} is inconsistent: kernelrelease {rel} but the built Image "
             f"says {baked}; the FIT would boot a different kernel than the "
             "modules in the image")
+    want = modules_stamp(tree, rel)
+    dep = stage / "lib/modules" / rel / "modules.dep"
+    if stamp_read(stage, "modules") == want and dep.is_file():
+        log(f"  [skip] modules: unchanged "
+            f"({short(stamp_path(stage, 'modules'))})")
+        LAST["modules"] = module_facts_from_stage(args, stage)
+        return False
     log(f"  kernel {rel} (tree {tree})")
     # Plain `make modules` leaves the .ko scattered across the tree; only
     # `modules_install INSTALL_MOD_PATH=...` creates lib/modules/<rel>/.
@@ -900,10 +1143,14 @@ def stage_modules(args, R: Runner, stage: Path) -> None:
              if p.is_file() and (p.name.endswith(".ko")
                                  or p.name.endswith(".ko.zst")))
     log(f"  installed {ko} modules for {rel} ({git})")
+    # Computed *after* the strip above: the stage strips the .ko in the tree,
+    # so a hash taken before it would never match the next run's pre-check.
+    stamp_write(stage, "modules", modules_stamp(tree, rel))
     LAST["modules"] = {"tree": str(tree), "release": rel, "git": git,
                        "image_version_string": baked or None,
                        "config_sha256": sha256_file(tree / ".config"),
                        "modules": ko, "modules_dep_sha256": sha256_file(dep)}
+    return True
 
 
 def module_facts_from_stage(args, stage: Path) -> dict:
@@ -956,6 +1203,15 @@ def stage_image(args, R: Runner, prof: Profile, stage: Path, out: Path,
     leftovers = stage / PROFILE_MNT.lstrip("/")
     if leftovers.exists():
         shutil.rmtree(leftovers)
+    # The per-stage freshness stamps also live in the stage but are build
+    # metadata, not image content: lift them out before mke2fs reads the tree
+    # and put them back after, so the next run can still skip clean stages.
+    stamps = stage / STAMP_DIR
+    stashed = None
+    if stamps.is_dir():
+        stashed = {p.name: p.read_text() for p in stamps.iterdir()
+                   if p.is_file()}
+        shutil.rmtree(stamps)
     out.mkdir(parents=True, exist_ok=True)
     if img.exists():
         img.unlink()
@@ -972,6 +1228,10 @@ def stage_image(args, R: Runner, prof: Profile, stage: Path, out: Path,
         f"-d {shlex.quote(str(stage))} {shlex.quote(str(img))} {blocks}",
     ])
     R.run(["fakeroot", "bash", "-c", inner])
+    if stashed is not None:
+        stamps.mkdir(parents=True, exist_ok=True)
+        for name, text in stashed.items():
+            (stamps / name).write_text(text)
     st = img.stat()
     apparent = st.st_size
     allocated = allocated_bytes(img)
@@ -1682,18 +1942,25 @@ def main() -> int:
     def on(name: str) -> bool:
         return name in order
 
+    # Freshness: a stage whose stamped inputs still match is not re-run, and a
+    # stage that does run makes the stages consuming its result run too
+    # (packages -> overlay -> hooks).  A changed base tarball wipes the stage
+    # tree, which drops every stamp, so a full rebuild follows.  tools only
+    # fetches host binaries and never touches the tree; image/verify/manifest
+    # always run against it.
+    ran = False
     if on("base"):
-        stage_base(args, R, prof, stage)
+        ran = stage_base(args, R, prof, stage) or ran
     if on("tools"):
         stage_tools(args, R, prof, stage, [ch, hook_ch])
     if on("packages"):
-        stage_packages(args, R, prof, ch)
+        ran = stage_packages(args, R, prof, ch) or ran
     if on("overlay"):
-        stage_overlay(args, R, prof, stage)
+        ran = stage_overlay(args, R, prof, stage, force=ran) or ran
     if on("hooks"):
-        stage_hooks(args, R, prof, hook_ch)
+        ran = stage_hooks(args, R, prof, hook_ch, force=ran) or ran
     if on("modules"):
-        stage_modules(args, R, stage)
+        ran = stage_modules(args, R, stage) or ran
     if on("image"):
         img = stage_image(args, R, prof, stage, out, size)
     verification = ({} if args.dry_run or not on("verify")
