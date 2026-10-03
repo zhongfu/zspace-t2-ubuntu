@@ -59,8 +59,8 @@ repository smoke test — the fetch and patch-application path is what is checke
 built with. It is committed here because `build/kernel/.config` is git-ignored in
 the kernel tree and therefore cannot travel in a patch.
 
-The file is committed verbatim, with one exception: the original workspace's
-absolute `CONFIG_INITRAMFS_SOURCE` path is rewritten at build time by
+The file is committed verbatim, with one exception: the absolute
+`CONFIG_INITRAMFS_SOURCE` path it was built with is rewritten at build time by
 `kernel/build.sh` to this clone's `build/initramfs`. No other symbol is touched.
 
 It is derived in three stages:
@@ -78,9 +78,8 @@ It is derived in three stages:
 
 ### Regenerating the config
 
-The pipeline lives in `lib/t2-build.py` (adapted from the original workspace's
-`scripts/t2-build.py`), against a kernel tree you have already fetched. It
-resolves the repository from its own location:
+The pipeline lives in `lib/t2-build.py`, against a kernel tree you have already
+fetched. It resolves the repository from its own location:
 
 * `--bootstrap-config` (with the kernel step) — on a fresh checkout, runs
   `defconfig` and enables the curated bootstrap set; only for a tree with no

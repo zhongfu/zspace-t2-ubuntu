@@ -92,7 +92,7 @@ never runs.
 What does work is the next stage.  The vendor SPL probes the SD controller and,
 when the card carries a valid U-Boot in its `uboot` partition, loads **U-Boot
 proper from the card** before falling back to the eMMC.  This was measured on
-the board (the notes call it experiment E1): with such a card inserted, the
+the board (experiment E1): with such a card inserted, the
 console showed the vendor SPL, then `U-Boot 2026.07` from the card, then the
 card's `extlinux.conf`.
 

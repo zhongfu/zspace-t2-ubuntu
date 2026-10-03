@@ -17,7 +17,7 @@ lets the pinctrl core put the pin back to its default function, which would
 undo the experiment.  Kill the process to release it.
 
 Written for the USB data mux (`gpio4 PD2` = chip 4, offset 26; the vendor's
-`switch-gpios = <&gpio4 26 GPIO_ACTIVE_LOW>`, see notes/bsp-port.md).
+`switch-gpios = <&gpio4 26 GPIO_ACTIVE_LOW>`).
 """
 import argparse
 import ctypes

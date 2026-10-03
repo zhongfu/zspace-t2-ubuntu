@@ -6,7 +6,7 @@ autoboot window -> `rockusb 0 mmc 0` so U-Boot's own MMC driver backs
 rkdeveloptool -> write the image in <=8 MiB chunks -> read-verify what the read
 path allows -> `rd` reset.
 
-Realities this encodes (see notes/mainline-7.3-build.md "Bring-up log 2"):
+Realities this encodes:
   * `reboot`/`reboot -f` from the bring-up shell HANGS the board. Reset with
     SysRq-`b` (serial BREAK then 'b') instead - that always works.
   * The `misc` BCB "bootloader" trick does NOT work: U-Boot's

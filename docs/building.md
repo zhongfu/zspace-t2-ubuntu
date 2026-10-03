@@ -75,11 +75,11 @@ rootfs ext4 image; `images/build-installer.sh` assembles the SD card image.
 All build output goes to `build/`, which git ignores.  Finished artefacts go to
 `build/out/`.
 
-Timings, as measured in the project notes: a full kernel build took **6m46s
+Timings, as measured during bring-up: a full kernel build took **6m46s
 wall** (98 minutes CPU) at `-j20` on the reference host.  A later run with the
 kernel already built finished in about **30 s**.  A U-Boot build and a rootfs
 build are faster than the kernel, but both include downloads, so treat them as
-network-bound.  The notes record no separate wall-clock for U-Boot or rootfs.
+network-bound.  No separate wall-clock was recorded for U-Boot or rootfs.
 
 ## Firmware
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """t2-build.py - build a complete, flashable ZSpace T2 (RK3568) bundle.
 
-This is the single entrypoint for the flow that notes/mainline-7.3-build.md (in
-the original bring-up workspace) describes by hand:
+This is the single entrypoint for the whole build flow, which the per-stage
+scripts and `docs/building.md` describe step by step:
 
     kernel : make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -jN Image dtbs
              -> <out>/Image + <out>/rk3568-t2.dtb
@@ -46,8 +46,8 @@ Invariants carried over from the bring-up notes
 * `Image` embeds the bring-up initramfs (CONFIG_INITRAMFS_SOURCE), so the
   initramfs is part of the kernel hash and is recorded in the manifest.
 * The kernel build needs PATH / LD_LIBRARY_PATH / BISON_PKGDATADIR /
-  CROSS_COMPILE exactly as in the notes; those are set from the extracted
-  cross toolchain under tools/, never from the host.
+  CROSS_COMPILE; those are set from the extracted cross toolchain under tools/,
+  never from the host.
 
 Usage
 -----
@@ -131,7 +131,7 @@ UBUNTU_SHA256 = \
 ROOTFS_LABEL = "zspace-rootfs"
 
 # `make ARCH=arm64 defconfig` + these symbols reproduces the board config that
-# is documented in notes/mainline-7.3-build.md (original workspace).  The tree's
+# is documented in docs/building.md.  The tree's
 # own .config is the ground truth; --bootstrap-config is only for a fresh
 # checkout.  Symbols are validated against the live .config by `--check-config`.
 BOOTSTRAP_ENABLE = """
