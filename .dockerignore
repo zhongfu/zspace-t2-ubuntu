@@ -1,0 +1,5 @@
+# The image carries no repository content - the build scripts run from a bind
+# mount - so keep the build context down to the Dockerfile itself.  (build/ is
+# several GB of fetched trees and artefacts.)
+*
+!Dockerfile

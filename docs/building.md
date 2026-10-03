@@ -21,6 +21,7 @@ Build on a Linux x86-64 host with about 40 GB free.  Install these packages
 | `zstd` | compressed kernel modules and the installer payload |
 | `dosfstools`, `mtools` | the FAT boot tree on the installer card (`mkfs.vfat`, `mcopy`) |
 | `curl`, `tar` | fetch and unpack the Ubuntu base tarball |
+| `bzip2` | unpack the pinned BusyBox source (`.tar.bz2`) |
 | `qemu-user-static`, `proot` | run the arm64 chroot for package installation |
 | `dpkg-deb`, `apt-get` | extract `qemu-user-static` and install packages in the chroot |
 
@@ -42,7 +43,7 @@ Run the entry points from the repository root, in this order.  Each script has
 |---|---|---|
 | 1 | `rootfs/fetch.sh` | `rootfs/firmware/` (vendor WiFi/BT blobs) |
 | 2 | `rootfs/initramfs/build.sh` | `build/initramfs` (static busybox initramfs tree) |
-| 3 | `kernel/fetch.sh` | `build/linux` (mainline tag `v7.3-rc5`) |
+| 3 | `kernel/fetch.sh` | `build/kernel` (mainline tag `v7.3-rc5`) |
 | 4 | `kernel/build.sh` | `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules/` |
 | 5 | `u-boot/fetch.sh` | `build/uboot` (`v2026.07`), `build/rkbin` (BL31 and DDR blobs) |
 | 6 | `u-boot/build.sh` | `build/out/u-boot.itb`, `idbloader.img`, `u-boot-installer.itb`, `idbloader-installer.img`, `u-boot-initial-env`, `u-boot-installer-initial-env` |
@@ -57,6 +58,12 @@ u-boot/fetch.sh  && u-boot/build.sh      # 5, 6
 rootfs/build.sh                          # 7
 images/build-installer.sh                # 8
 ```
+
+`./build-all.sh` runs the same eight steps in this order, skipping a fetch whose
+tree is already there, so it is safe to re-run; `./docker-build.sh` runs it in
+the container below.  Step 1 is the one thing they cannot do for you: the vendor
+firmware needs a source, so `build-all.sh` stops with the `rootfs/fetch.sh`
+invocation to run when it is missing.
 
 **Step 2 must precede step 4.**  The kernel build rewrites
 `CONFIG_INITRAMFS_SOURCE` to `<repo>/build/initramfs`, the tree that
@@ -106,25 +113,36 @@ regulatory database are redistributable, so the build fetches those normally.
 
 ## Docker
 
-**Not implemented yet.**  The repository builds on the host as described above;
-there is no `Dockerfile`.
+`Dockerfile` pins the host tools above, and `docker-build.sh` runs the whole
+build inside it - the same eight steps, through `build-all.sh`:
 
-A container image would need: a Debian/Ubuntu base; the packages in the table
-above; the cross toolchain; the source trees and the firmware staged in; and
-network access for the fetches.  Real caveats:
+```sh
+./docker-build.sh                    # the whole build -> build/out/installer.img
+./docker-build.sh kernel/build.sh    # one step, in the same environment
+./docker-build.sh bash               # a shell in the same environment
+```
 
-* **Privilege.**  The kernel and U-Boot builds need no root, and the rootfs
-  build avoids host root with `fakeroot` and `proot`.  Anything that mounts a
-  loop device, or uses the `sudo` chroot backend, needs extra privileges.
-* **Kernel build time.**  The kernel build is CPU-heavy for several minutes.
-  Run it once, cache the tree, and avoid many parallel container builds on one
-  host.
-* **Downloads.**  Fetching mainline Linux, U-Boot, rkbin, the Ubuntu base
-  tarball, and the chroot tools needs network and a cache.  Bake a warm cache
-  into the image or mount one as a volume.
-* **Devices.**  The serial console and maskrom work need USB access:
-  `--device=/dev/ttyUSB0` for the adapter, and permission for raw USB access so
-  `rkdeveloptool` can see `2207:350a`.  `tools/t2-flash.py` resolves
-  `rkdeveloptool` from `PATH` or `T2_RKDEVELOPTOOL`.
-* **Host side of the gadget link.**  `tools/t2-gadget-link.py` drives
-  NetworkManager on the host; a container would need host networking and D-Bus.
+The image carries no repository content: the tree is bind-mounted at `/work`,
+the container runs with your uid and gid, so `build/` stays yours, and the only
+things baked in are Ubuntu 24.04 and the packages listed above (plus `bzip2` for
+the BusyBox source).  The apt lists are left in the image on purpose -
+`rootfs/t2-distro.py` fetches `qemu-user-static` with `apt-get download`.  Build
+the image once; rebuild it (`docker build --no-cache`) when those lists go
+stale, because the download resolves its version from them.
+
+Caveats that remain:
+
+* **Network.**  The fetch steps still clone Linux, U-Boot and rkbin, unpacks the
+  Ubuntu base tarball, downloads the BusyBox source, collects `qemu-user-static`
+  and `proot`, and apt-installs the profile inside the chroot.  All of it is
+  cached under `build/`, so a second run only re-downloads inside the chroot.
+* **`ptrace`.**  `docker-build.sh` passes `--security-opt seccomp=unconfined`:
+  the default rootfs backend is `proot`, which needs `ptrace`, and Docker's
+  default seccomp profile denies it.
+* **Privilege.**  Unchanged from a host build: no loop devices and no host root;
+  the image stage is `fakeroot` + `mke2fs -d`, and `qemu-user-static` is
+  unpacked rather than bound into `binfmt_misc`.
+* **Kernel build time.**  Unchanged: minutes, CPU-bound.  `JOBS=N
+  ./docker-build.sh` limits it.
+* **Devices.**  The container is only the build.  The serial console, maskrom
+  and the gadget link in `tools/` stay on the host and need USB access there.
