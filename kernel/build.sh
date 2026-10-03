@@ -102,8 +102,11 @@ if [ "$applied" -eq "${#patches[@]}" ]; then
 else
     echo "== applying ${#patches[@]} patches =="
     git_flags=()
-    git -C "$tree" config user.email >/dev/null 2>&1 || git_flags+=(-c user.email=zspace-t2@localhost)
-    git -C "$tree" config user.name  >/dev/null 2>&1 || git_flags+=(-c user.name="ZSpace T2 build")
+    # `git am` needs an identity to author the patch commits.  Use the kernel
+    # clone's own if it has one; otherwise a neutral one, never a personal or
+    # machine-specific address.
+    git -C "$tree" config user.email >/dev/null 2>&1 || git_flags+=(-c user.email=t2-build@localhost)
+    git -C "$tree" config user.name  >/dev/null 2>&1 || git_flags+=(-c user.name="T2 build")
     if ! git -C "$tree" "${git_flags[@]}" am "${patches[@]}"; then
         echo "error: git am failed. Inspect build/kernel and run" >&2
         echo "       'git -C build/kernel am --abort' to reset." >&2
