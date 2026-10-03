@@ -30,7 +30,9 @@
 #     changes, the new oem is created at a fresh LBA, and the boot chain
 #     (rootfs -> boot tree -> U-Boot -> SPL) is written last;
 #   * LED feedback (red blink while waiting for the presses, steady red while
-#     verifying and writing, green when done);
+#     verifying, red/green alternating at ~2 Hz for every sector written, green
+#     when done, and a repeated two-flash red pattern if the run stops without
+#     finishing - a write in progress must never look finished);
 #   * not armed is a clean stop: the board drops to the recovery shell.
 #
 # Config keys (card FAT partition, `t2-config.txt`; exactly the names and
@@ -92,7 +94,11 @@ KEYWAIT=${T2_INSTALL_KEYWAIT:-t2-keywait}
 LEDS=${T2_INSTALL_LEDS:-/sys/class/leds}
 LED_RED=${T2_INSTALL_LED_RED:-power-led-red}
 LED_GREEN=${T2_INSTALL_LED_GREEN:-power-led-green}
+# Half-period of the write-phase alternation (~2 Hz), the "do not cut power"
+# signal: a steady colour reads as either idle or finished.
+WRITE_BLINK_HALF=0.25
 blinker=''
+verifier=''
 CFG_MNT=''
 PAY_MNT=''
 BMNT=''
@@ -181,13 +187,71 @@ blink() { # $1 = LED name, $2 = times, $3 = half-period, $4 = state to leave it 
 	led_set "$1" "$4"
 }
 
+# Background: alternate red/green until killed.  This is the "sectors are being
+# written" signal, so it runs for the whole destructive window and the user is
+# told not to cut power while it is going; killing it is the caller's job
+# (`blinker` is what cleanup() and the success paths kill).
+blink_alt() {
+	while :; do
+		led_set "$LED_RED" 1
+		led_set "$LED_GREEN" 0
+		sleep "$WRITE_BLINK_HALF"
+		led_set "$LED_RED" 0
+		led_set "$LED_GREEN" 1
+		sleep "$WRITE_BLINK_HALF"
+	done
+}
+
+# Background: the "this run stopped without finishing" pattern - two short red
+# flashes then a pause, repeated.  Deliberately not the uniform gate cadence
+# (which means "press the button, more to go") and not the red/green write
+# alternation (which means "writing, do not cut power").
+blink_fail() {
+	while :; do
+		led_set "$LED_RED" 1
+		sleep 0.15
+		led_set "$LED_RED" 0
+		sleep 0.15
+		led_set "$LED_RED" 1
+		sleep 0.15
+		led_set "$LED_RED" 0
+		sleep 0.85
+	done
+}
+
+start_write_blink() {
+	led_set "$LED_RED" 1
+	led_set "$LED_GREEN" 0
+	blinker=''
+	blink_alt &
+	blinker=$!
+}
+
+stop_write_blink() {
+	[ -z "$blinker" ] || kill "$blinker" 2>/dev/null || true
+	[ -z "$blinker" ] || wait "$blinker" 2>/dev/null || true
+	blinker=''
+	led_set "$LED_RED" 0
+	led_set "$LED_GREEN" 1
+}
+
 cleanup() {
 	if [ -n "$PAY_MNT" ]; then umount "$PAY_MNT" 2>/dev/null || true; fi
 	if [ -n "$BMNT" ]; then umount "$BMNT" 2>/dev/null || true; fi
 	if [ -n "$CFG_MNT" ]; then umount "$CFG_MNT" 2>/dev/null || true; fi
 	[ -z "$blinker" ] || kill "$blinker" 2>/dev/null || true
+	[ -z "$verifier" ] || kill "$verifier" 2>/dev/null || true
+	verifier=''
 	blinker=''
 	led_set "$LED_RED" 0
+	# The write alternation can leave green lit; a failed run must not look
+	# like a finished one.
+	led_set "$LED_GREEN" 0
+	# Every drop to the recovery shell means the run stopped without finishing
+	# (card not armed, count missed, payload refused, write failed), so leave the
+	# board visibly failed rather than dark.  Untracked on purpose: this blinker
+	# is meant to outlive the exec into the recovery shell.
+	blink_fail &
 }
 
 drop_to_shell() {
@@ -261,6 +325,33 @@ require_zstd() { # $1 = what is being streamed, for the message
 	command -v zstd >/dev/null 2>&1 && return 0
 	log "$1 is zstd-compressed but this initramfs has no zstd; refusing"
 	return 1
+}
+
+# Payload verification, factored out so it can run in the background while the
+# press gate is open: it only reads the card, the gate only reads the input
+# device, so the presses overlap the sha256/zstd pass instead of queueing behind
+# it.  Returns non-zero and logs the reason; the caller joins it before the
+# first write, so a failure still writes nothing.
+verify_payload() { # $1 = file, $2 = expected sha256 (may be empty), $3 = name for messages
+	if [ -n "$2" ]; then
+		got=$(sha256sum "$1" | cut -d' ' -f1)
+		if [ "$got" != "$2" ]; then
+			log "$3 sha256 $got != $2; refusing"
+			return 1
+		fi
+		log "$3 sha256 verified ($got)"
+	fi
+	# The write cannot catch a corrupt stream (`zstd -dc f | dd` reports only
+	# dd's status), so test the stream first.
+	if [ "$DECOMPRESS" = zstd ]; then
+		require_zstd "$(basename "$1")" || return 1
+		if ! zstd -t "$1" >/dev/null 2>&1; then
+			log "$3 failed its zstd integrity test; refusing"
+			return 1
+		fi
+		log "$3 zstd stream verified"
+	fi
+	return 0
 }
 
 # partition or whole disk -> the whole disk
@@ -623,33 +714,23 @@ install_run() {
 		drop_to_shell
 	fi
 
-	# The confirmation gate comes first, so the user is not left waiting through
-	# the payload verification before being asked to press.  (The sha256/zstd
-	# verification below still runs before the first write.)
+	# The gate and the verification run at the same time: verification only
+	# reads the card and the gate only reads the input device, so the presses are
+	# not spent waiting for sha256/zstd.  The first write still waits for both,
+	# so a verification failure writes nothing.
+	log "verifying $(basename "$payload") while the presses are counted"
+	verify_payload "$payload" "$WANT_SHA" payload &
+	verifier=$!
 	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_INSTALL_FORCE:-}"; then
 		log "press count not confirmed ($PRESSES required); nothing written"
+		kill "$verifier" 2>/dev/null || true
 		drop_to_shell
 	fi
-
-	if [ -n "$WANT_SHA" ]; then
-		got=$(sha256sum "$payload" | cut -d' ' -f1)
-		if [ "$got" != "$WANT_SHA" ]; then
-			log "payload sha256 $got != $WANT_SHA; refusing"
-			drop_to_shell
-		fi
-		log "payload sha256 verified ($got)"
+	if ! wait "$verifier"; then
+		log "payload verification failed; nothing written"
+		drop_to_shell
 	fi
-
-	# The write cannot catch a corrupt stream (`zstd -dc f | dd` reports only
-	# dd's status), so test the stream first.
-	if [ "$DECOMPRESS" = zstd ]; then
-		require_zstd "$(basename "$payload")" || drop_to_shell
-		if ! zstd -t "$payload" >/dev/null 2>&1; then
-			log "payload failed its zstd integrity test; refusing"
-			drop_to_shell
-		fi
-		log "payload zstd stream verified"
-	fi
+	verifier=''
 
 	log "confirmed: writing $(basename "$payload") to $TARGET${DECOMPRESS:+ (zstd)}"
 	if [ "${T2_INSTALL_DRYRUN:-}" = 1 ]; then
@@ -662,11 +743,10 @@ install_run() {
 		drop_to_shell
 	fi
 
-	# Steady red for the write: the confirmation above already left it solid, and
-	# green is reserved for the end (the old alternating blinker flickered green
-	# here, which reads as "done" mid-write).
-	led_set "$LED_RED" 1
-	led_set "$LED_GREEN" 0
+	# Red/green alternating for the write: the confirmation above left the LED
+	# solid red, and this is the phase where cutting power corrupts the target,
+	# so it must look like neither "idle" nor "done".
+	start_write_blink
 	rc=0
 	if [ -n "$DECOMPRESS" ]; then
 		zstd -dc "$payload" | dd of="$TARGET" bs=4M conv=fsync 2>/dev/null || rc=$?
@@ -677,9 +757,10 @@ install_run() {
 		log "dd failed; the target may be in an unknown state - reinstall from the card"
 		drop_to_shell
 	fi
-	led_set "$LED_RED" 0
-	led_set "$LED_GREEN" 1
+	# The final sync is part of the window the user must not interrupt, so the
+	# alternation runs until it is done.
 	sync
+	stop_write_blink
 	log "install complete; rebooting into the written system (remove the card first if this boot came from it)"
 	if [ "${T2_INSTALL_NOREBOOT:-}" = 1 ]; then
 		log "reboot suppressed (test); the board would reboot now"
@@ -792,33 +873,23 @@ flash_run() {
 		drop_to_shell
 	fi
 
-	# The confirmation gate comes before the verifications, so the user is not
-	# left waiting through sha256/zstd before being asked to press.  (Both
-	# verifications still run before the first write.)
+	# The gate and the verification run at the same time: verification only
+	# reads the card and the gate only reads the input device, so the presses are
+	# not spent waiting for sha256/zstd.  The first write still waits for both,
+	# so a verification failure writes nothing.
+	log "verifying $(basename "$rootfs") while the presses are counted"
+	verify_payload "$rootfs" "$WANT_SHA" rootfs &
+	verifier=$!
 	if ! count_presses "$WINDOW" "$PRESSES" "$KEY" "$BUTTON" "${T2_FLASH_FORCE:-}"; then
 		log "press count not confirmed ($PRESSES required); not flashing"
+		kill "$verifier" 2>/dev/null || true
 		drop_to_shell
 	fi
-
-	if [ -n "$WANT_SHA" ]; then
-		got=$(sha256sum "$rootfs" | cut -d' ' -f1)
-		if [ "$got" != "$WANT_SHA" ]; then
-			log "rootfs sha256 $got != $WANT_SHA; refusing"
-			drop_to_shell
-		fi
-		log "rootfs sha256 verified ($got)"
+	if ! wait "$verifier"; then
+		log "rootfs verification failed; not flashing"
+		drop_to_shell
 	fi
-
-	# The write cannot catch a corrupt stream (`zstd -dc f | dd` reports only
-	# dd's status), so test the stream first.
-	if [ "$DECOMPRESS" = zstd ]; then
-		require_zstd "$(basename "$rootfs")" || drop_to_shell
-		if ! zstd -t "$rootfs" >/dev/null 2>&1; then
-			log "rootfs failed its zstd integrity test; refusing"
-			drop_to_shell
-		fi
-		log "rootfs zstd stream verified"
-	fi
+	verifier=''
 
 	# --- how the board was turned on (log only, never a gate) ---------------
 	on_source() {
@@ -919,6 +990,10 @@ flash_run() {
 	fi
 
 	# --- new partition table ------------------------------------------------
+	# Everything from here to the final sync changes the disk, and a power cut
+	# anywhere in it leaves partitions half-written, so the LED starts
+	# alternating here and only goes green when the last sync has returned.
+	start_write_blink
 	if ! write_gpt "$DISK" "$sectors"; then
 		log "could not write the new GPT; stopping"
 		drop_to_shell
@@ -962,9 +1037,7 @@ flash_run() {
 	fi
 
 	# --- rootfs, boot tree, then the loader last ----------------------------
-	# Steady red for the whole write sequence; green is reserved for the end.
-	led_set "$LED_RED" 1
-	led_set "$LED_GREEN" 0
+	# (The LED has been alternating red/green since before the GPT write.)
 	log "writing rootfs to ${DISK}p4${DECOMPRESS:+ (zstd)}"
 	if [ -n "$DECOMPRESS" ]; then
 		zstd -dc "$rootfs" | dd of="${DISK}p4" bs=4M conv=fsync 2>/dev/null \
@@ -1024,9 +1097,10 @@ flash_run() {
 	else
 		log "keeping the vendor SPL already at LBA 0x40"
 	fi
+	# The final sync is part of the window the user must not interrupt, so the
+	# alternation runs until it is done.
 	sync
-	led_set "$LED_RED" 0
-	led_set "$LED_GREEN" 1
+	stop_write_blink
 	log "flash complete; rebooting.  Remove the card now: the card's loader is preferred while it is inserted."
 	if [ "${T2_FLASH_NOREBOOT:-}" = 1 ]; then
 		log "not rebooting (T2_FLASH_NOREBOOT=1)"
