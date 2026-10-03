@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: ZSpace T2 bring-up <t2@localhost>
+From: zhongfu <me@zhongfu.li>
 Date: Tue, 30 Sep 2026 13:00:01 +0000
 Subject: [PATCH 2/5] arm64: dts: rockchip: add the ZSpace T2 (RK3568)
 
@@ -9,11 +9,10 @@ pcie2x1, RTL8156B USB NIC behind the RJ45, HDMI, a PWM fan and six ADC keys.
 
 The AP6275P hangs off pcie2x1 with its power gate (gpio2 PB1, the vendor's
 vcc3v3_pcie20_wifi) wired as the ordinary vpcie3v3 supply; the driver quirk in
-0001 handles the module's unusual bring-up.  See
-notes/mainline-7.3-build.md in the t2-bringup repository for the full
-bring-up log, including which peripherals are deliberately left disabled.
+0001 handles the module's unusual bring-up.  Peripherals this board does not use
+are left `status = "disabled"` in the board DTS; the comments below say why.
 
-Signed-off-by: ZSpace T2 bring-up <t2@localhost>
+Signed-off-by: zhongfu <me@zhongfu.li>
 ---
 diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
 index e7936a21c118..bd77bad158f8 100644
@@ -29,7 +28,7 @@ index e7936a21c118..bd77bad158f8 100644
  dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3568-wolfvision-pf5-io-expander.dtbo
 diff --git a/arch/arm64/boot/dts/rockchip/rk3568-t2.dts b/arch/arm64/boot/dts/rockchip/rk3568-t2.dts
 new file mode 100644
-index 000000000000..fd6ad60bf0f0
+index 000000000000..105e28056585
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3568-t2.dts
 @@ -0,0 +1,1228 @@
@@ -99,8 +98,8 @@ index 000000000000..fd6ad60bf0f0
 +
 +	/*
 +	 * Persistent store for a kernel hang.  Values are the *vendor's own*,
-+	 * read from the FDT inside workbench/boot-backup/stock-boot.img (the
-+	 * FDT at offset 0x800, compatible = "zspace,t2"), not transcribed:
++	 * read from the vendor boot image's FDT (the FDT at offset 0x800,
++	 * compatible = "zspace,t2"), not transcribed:
 +	 *
 +	 *     ramoops@110000 {
 +	 *         compatible = "ramoops";
@@ -111,7 +110,7 @@ index 000000000000..fd6ad60bf0f0
 +	 *         pmsg-size = <0x50000>;
 +	 *     };
 +	 *
-+	 * Cross-check (all from notes/uboot-mainline-t2.md / the vendor FIT):
++	 * Cross-check (all against the vendor FIT):
 +	 * BL31 sits at 0x40000..~0x61000 and 0xfdcc1000..0xfdcd2000, U-Boot at
 +	 * 0x800000, and the kernel is loaded/entered at 0x280000 - so
 +	 * 0x110000..0x200000 is free and does not overlap ATF, U-Boot or the
@@ -1160,7 +1159,7 @@ index 000000000000..fd6ad60bf0f0
 +	 * but ohci-platform's .shutdown() register access hard-stalls the SoC on
 +	 * this board, so every reboot/poweroff ends with an RCU stall and only
 +	 * recovers via the watchdog.  Disabling them removes the device from the
-+	 * shutdown walk.  See notes/mainline-7.3-build.md (2026-10-03).
++	 * shutdown walk (verified on the board, 2026-10-03).
 +	 */
 +	status = "disabled";
 +};
@@ -1235,7 +1234,7 @@ index 000000000000..fd6ad60bf0f0
 + * with the base's devfreq map left on `gpu_target` (75 °C).  Caveat: the
 + * thermal core does not arbitrate a cooling device shared between zones, so
 + * when only one zone is hot the two governors can disagree about the fan's
-+ * state (verified behaviour, see notes/bsp-port.md).  It is acceptable here
++ * state (verified behaviour on the board).  It is acceptable here
 + * because both sensors sit on the same die, but one aggregating zone over both
 + * sensors is the clean fix if the fan ever audibly hunts.
 + */

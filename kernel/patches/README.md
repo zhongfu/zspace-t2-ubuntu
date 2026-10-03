@@ -35,14 +35,13 @@ cd build/kernel
 git am ../../kernel/patches/*.patch    # the glob expands in numeric order, 0001 -> 0005
 ```
 
-All five apply cleanly to pristine v7.3-rc5 in that order. The result matches the
-live build tree (`workbench/mainline-7.3`) byte-for-byte for every path the
-patches touch:
+All five apply cleanly to pristine v7.3-rc5 in that order. The blobs the
+patches produce for every path they touch are:
 
 | path | blob |
 |---|---|
 | `drivers/pci/controller/dwc/pcie-dw-rockchip.c` | `272e4c7bc048` |
-| `arch/arm64/boot/dts/rockchip/rk3568-t2.dts` | `fd6ad60bf0f0` |
+| `arch/arm64/boot/dts/rockchip/rk3568-t2.dts` | `105e28056585` |
 | `arch/arm64/boot/dts/rockchip/Makefile` | `bd77bad158f8` |
 | `drivers/media/platform/rockchip/rkvdec/rkvdec.c` | `4647120067f7` |
 | `arch/arm64/boot/dts/rockchip/rk356x-base.dtsi` | `eaf9dc27f6a6` |

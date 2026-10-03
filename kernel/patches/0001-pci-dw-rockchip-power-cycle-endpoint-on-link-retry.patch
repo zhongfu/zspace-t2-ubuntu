@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: ZSpace T2 bring-up <t2@localhost>
+From: zhongfu <me@zhongfu.li>
 Date: Tue, 30 Sep 2026 13:00:00 +0000
 Subject: [PATCH 1/5] PCI: dw-rockchip: power-cycle the endpoint and retry if
  the link does not train
@@ -35,7 +35,7 @@ download succeeds; the two NVMe endpoints train on their own in ~250ms, so the
 initial wait is 500ms.  On the T2 this takes the PCIe WiFi controller's probe
 off the boot critical path from 5.9s to 2.9s.
 
-Signed-off-by: ZSpace T2 bring-up <t2@localhost>
+Signed-off-by: zhongfu <me@zhongfu.li>
 ---
 diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
 index af26a07c0c9e..272e4c7bc048 100644
