@@ -11,10 +11,13 @@
 #   2. build it static aarch64 with rootfs/initramfs/busybox.config
 #   3. `make install` lays out busybox + every applet symlink
 #   4. compile src/t2-keywait.c static aarch64
-#   5. copy init, installer.sh and the firmware tree into place
+#   5. download the pinned zstd source and build the CLI static aarch64: the
+#      installer streams the payload through `zstd -dc` on the board, and
+#      busybox has no zstd applet
+#   6. copy init, installer.sh and the firmware tree into place
 #
-# The 1.2 MB busybox binary and the applet symlinks are build outputs, not
-# repository content.  The Broadcom WiFi/BT blobs are copied from
+# The 1.2 MB busybox binary, the applet symlinks and the zstd binary are build
+# outputs, not repository content.  The Broadcom WiFi/BT blobs are copied from
 # rootfs/firmware/ (populated by rootfs/fetch.sh); the RTL NIC firmware and
 # the regulatory database are committed under rootfs/initramfs/firmware/.
 set -eu
@@ -29,6 +32,10 @@ CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 BB_VERSION=1.36.1
 BB_URL=${BUSYBOX_URL:-"https://busybox.net/downloads/busybox-$BB_VERSION.tar.bz2"}
 BB_SHA256=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
+
+ZSTD_VERSION=1.5.7
+ZSTD_URL=${ZSTD_URL:-"https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz"}
+ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 
 downloads=$repo/build/downloads
 srcdir=$repo/build/busybox-$BB_VERSION
@@ -47,6 +54,7 @@ Options:
 Environment:
   CROSS_COMPILE  toolchain prefix (default: $CROSS_COMPILE)
   BUSYBOX_URL    source tarball URL override (default: $BB_URL)
+  ZSTD_URL       source tarball URL override (default: $ZSTD_URL)
 EOF
     exit 0
 }
@@ -65,7 +73,7 @@ done
 [ -f "$here/busybox.config" ] || die "busybox.config is missing next to $0"
 [ -f "$here/src/t2-keywait.c" ] || die "src/t2-keywait.c is missing"
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
-    || die "need curl or wget to download BusyBox"
+    || die "need curl or wget to download the source tarballs"
 
 command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || die \
     "${CROSS_COMPILE}gcc is not on PATH; install an aarch64 cross toolchain \
@@ -134,6 +142,43 @@ mkdir -p "$out/bin"
     -B/usr/aarch64-linux-gnu/lib -L/usr/aarch64-linux-gnu/lib \
     -static -O2 -s -o "$out/bin/t2-keywait" "$here/src/t2-keywait.c"
 
+# The installer streams the payload through `zstd -dc` on the board, and
+# busybox has no zstd applet, so the initramfs carries its own static zstd.
+# Built from source here, from a pinned tarball, exactly like busybox.
+echo "== building zstd $ZSTD_VERSION (static aarch64) =="
+zstd_tar=$downloads/zstd-$ZSTD_VERSION.tar.gz
+zstd_src=$repo/build/zstd-$ZSTD_VERSION
+if [ ! -f "$zstd_tar" ]; then
+    echo "== downloading zstd $ZSTD_VERSION =="
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$zstd_tar.part" "$ZSTD_URL"
+    else
+        wget -q -O "$zstd_tar.part" "$ZSTD_URL"
+    fi
+    mv "$zstd_tar.part" "$zstd_tar"
+fi
+
+got=$(sha256sum "$zstd_tar" | awk '{print $1}')
+[ "$got" = "$ZSTD_SHA256" ] || die "zstd tarball sha256 $got != $ZSTD_SHA256"
+
+if [ ! -d "$zstd_src" ]; then
+    echo "== extracting to $zstd_src =="
+    tar -xf "$zstd_tar" -C "$repo/build" --no-same-owner
+fi
+
+make -C "$zstd_src/lib" -j"$jobs" libzstd.a \
+    CC="${CROSS_COMPILE}gcc" CFLAGS="-O2 $extra_cflags"
+make -C "$zstd_src/programs" -j"$jobs" zstd \
+    CC="${CROSS_COMPILE}gcc" CFLAGS="-O2 $extra_cflags" \
+    LDFLAGS="-static -s $extra_ldflags"
+install -m 755 "$zstd_src/programs/zstd" "$out/bin/zstd"
+
+# A dynamic binary would be useless in here: this initramfs has no ld.so and
+# no shared libc, so a mis-linked zstd would only fail on the board.
+if "${CROSS_COMPILE}readelf" -d "$out/bin/zstd" 2>/dev/null | grep -q NEEDED; then
+    die "the zstd binary is dynamically linked; the initramfs cannot run it"
+fi
+
 # -------------------------------------------------------------------- layout
 for d in dev etc proc root sys tmp var/run; do
     mkdir -p "$out/$d"
@@ -157,7 +202,7 @@ chmod 644 "$out/lib/firmware/rtl_nic/"* "$out/lib/firmware/"*.db* \
 
 echo
 echo "initramfs tree: $out"
-ls -l "$out/bin/busybox" "$out/bin/t2-keywait"
+ls -l "$out/bin/busybox" "$out/bin/t2-keywait" "$out/bin/zstd"
 echo "  applet symlinks: $(find "$out/bin" "$out/sbin" -type l | wc -l)"
 echo "  firmware:        $(find "$out/lib/firmware" -type f | wc -l) file(s)"
 echo "done."

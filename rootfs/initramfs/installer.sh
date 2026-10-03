@@ -65,6 +65,7 @@
 #   T2_INSTALL_ROOT             relocate every path written
 #   T2_INSTALL_CONFIG_DIR       skip the mount, point at a dir with t2-config.txt
 #   T2_INSTALL_CONFIG_LABEL     override the config partition labels
+#   T2_INSTALL_CONFIG_TRIES     scans of the card before giving up (default 100)
 #   T2_INSTALL_SHELL            program used for the recovery shell
 #   T2_INSTALL_KEYWAIT          alternate press counter
 #   T2_INSTALL_ROOTDEV / T2_FLASH_ROOTDEV   override "which disk holds this rootfs"
@@ -216,6 +217,48 @@ label_dev() { # $1 = label -> device on stdout
 			;;
 		esac
 	done
+	return 1
+}
+
+# The card's partitions appear only once the SD host has finished probing it.
+# /init hands straight over to this script as soon as the cmdline says flash
+# mode, with no wait for the medium, and the mmc probe is asynchronous:
+# measured 2026-10-03 on the install card, /dev/mmcblk1 appeared at t=4.584 s
+# and its p1..p8 at t=4.596 s, so a scan that landed in that 12 ms window saw
+# the disk with no partitions yet and reported "nothing armed".  Retry until
+# the labelled partition turns up; a card that is already probed succeeds on
+# the first pass, so this adds nothing to the normal case.
+config_dev() { # -> device on stdout, empty when none turns up
+	dev=''
+	tries=${T2_INSTALL_CONFIG_TRIES:-100}	# 100 x 0.1 s = 10 s
+	i=0
+	while [ -z "$dev" ] && [ "$i" -lt "$tries" ]; do
+		for l in $LABELS; do
+			dev=$(label_dev "$l" || true)
+			[ -n "$dev" ] && break
+		done
+		[ -n "$dev" ] && break
+		i=$((i + 1))
+		sleep 0.1
+	done
+	printf '%s\n' "$dev"
+}
+
+# what the label scan can actually see, for the failure message
+block_devices() {
+	for s in /sys/class/block/*; do
+		case "${s##*/}" in loop*|ram*|zram*|*boot0|*boot1) continue ;; esac
+		printf '%s ' "${s##*/}"
+	done
+}
+
+# zstd has no busybox applet, so it has to be the static binary the initramfs
+# build installs at /bin/zstd.  Checking for it first beats letting `zstd -t`
+# fail with "not found", which the caller's log line then reports as a corrupt
+# stream (measured 2026-10-03: the install card refused its payload that way).
+require_zstd() { # $1 = what is being streamed, for the message
+	command -v zstd >/dev/null 2>&1 && return 0
+	log "$1 is zstd-compressed but this initramfs has no zstd; refusing"
 	return 1
 }
 
@@ -592,6 +635,7 @@ install_run() {
 	# The write cannot catch a corrupt stream (`zstd -dc f | dd` reports only
 	# dd's status), so test the stream first.
 	if [ "$DECOMPRESS" = zstd ]; then
+		require_zstd "$(basename "$payload")" || drop_to_shell
 		if ! zstd -t "$payload" >/dev/null 2>&1; then
 			log "payload failed its zstd integrity test; refusing"
 			drop_to_shell
@@ -724,6 +768,7 @@ flash_run() {
 		drop_to_shell
 	fi
 	if [ "$DECOMPRESS" = zstd ]; then
+		require_zstd "$(basename "$rootfs")" || drop_to_shell
 		if ! zstd -t "$rootfs" >/dev/null 2>&1; then
 			log "rootfs failed its zstd integrity test; refusing"
 			drop_to_shell
@@ -999,13 +1044,10 @@ mkdir -p "$TMP"
 if [ -n "$CONFIG_DIR" ]; then
 	cfgdir=$CONFIG_DIR
 else
-	dev=''
-	for l in $LABELS; do
-		dev=$(label_dev "$l" || true)
-		[ -n "$dev" ] && break
-	done
+	dev=$(config_dev)
 	if [ -z "$dev" ]; then
 		log "no config partition (labels: $LABELS); nothing armed"
+		log "  block devices visible: $(block_devices)"
 		drop_to_shell
 	fi
 	CFG_MNT="$ROOT/run/t2-installer-config"

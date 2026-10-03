@@ -43,7 +43,7 @@ Run the entry points from the repository root, in this order.  Each script has
 | Step | Command | Output |
 |---|---|---|
 | 1 | `rootfs/fetch.sh` | `rootfs/firmware/` (vendor WiFi/BT blobs) |
-| 2 | `rootfs/initramfs/build.sh` | `build/initramfs` (static busybox initramfs tree) |
+| 2 | `rootfs/initramfs/build.sh` | `build/initramfs` (static busybox + zstd initramfs tree) |
 | 3 | `kernel/fetch.sh` | `build/kernel` (mainline tag `v7.3-rc5`) |
 | 4 | `kernel/build.sh` | `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules/` |
 | 5 | `u-boot/fetch.sh` | `build/uboot` (`v2026.07`), `build/rkbin` (BL31 and DDR blobs) |
@@ -73,10 +73,13 @@ embedded initramfs is wrong.
 
 `rootfs/fetch.sh` runs first because `rootfs/build.sh` stops without the vendor
 firmware.  `rootfs/initramfs/build.sh` builds the static busybox and the
-initramfs layout.  `kernel/build.sh` applies the five patches in
-`kernel/patches/`, copies `kernel/config/kernel.config`, runs `olddefconfig`,
-and builds `Image`, `dtbs`, and `modules`; a tree that already carries all five
-patches is rebuilt as it is, so a re-run does not apply them twice.
+initramfs layout, plus a static `zstd` built from a pinned tarball: the
+installer streams its payloads through `zstd -dc` on the board, and busybox has
+no zstd applet, so both live in the initramfs.  `kernel/build.sh` applies the
+five patches in `kernel/patches/`, copies `kernel/config/kernel.config`, runs
+`olddefconfig`, and builds `Image`, `dtbs`, and `modules`; a tree that already
+carries all five patches is rebuilt as it is, so a re-run does not apply them
+twice.
 `u-boot/build.sh` builds two images from one board control: the plain image for
 the eMMC and the installer image for the card, each with its own
 `idbloader.img`.  `rootfs/build.sh` builds the rootfs ext4 image;
