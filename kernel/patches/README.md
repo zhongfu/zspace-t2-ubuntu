@@ -94,6 +94,27 @@ in-flight "[RFC PATCH] PCI: rockchip-host: Retry link training on failure withou
 PERST#" series.
 
 No userspace helper is needed: the device is enumerated on the normal
-`pci_host_probe()` path, with no rescan. See entry 18 of
-`notes/mainline-7.3-build.md` in the bring-up workspace for the measurements
-behind every choice above.
+`pci_host_probe()` path, with no rescan.  The measurements behind every choice
+above (the link training times, the 500 ms and 1 s waits, and the 5.9 s → 2.9 s
+probe saving) are in the patch's own commit message.
+
+## Measured, not adopted
+
+**`probe_type = PROBE_PREFER_ASYNCHRONOUS` on `rockchip_pcie_driver`.**  The PCIe
+probes cost this board ~2.8 s inside the kernel phase, so probing them
+asynchronously looks like free boot time.  It is not.
+
+The change does what it says: over three boots the kernel phase drops from a
+stable 4.76-4.80 s to 3.99-4.08 s, the NVMe links train at ~1.1 s, and the WiFi
+link still comes up at ~3.6 s with brcmfmac loading and associating normally,
+with no probe errors.  But the PCIe functions then appear *while*
+`systemd-udev-trigger` is running, and NetworkManager waits for udev's initial
+enumeration before it starts, so it is held back: it runs at 5.8-6.1 s instead
+of 4.2-4.4 s, and the userspace phase goes from 7.54-8.54 s (median 7.60 s,
+synchronous) to a steady 8.36-8.54 s (median 8.50 s, asynchronous).
+
+Kernel + userspace totals are 12.30-13.32 s (median 12.41 s) synchronous against
+12.39-12.58 s (median 12.54 s) asynchronous, and the serial banner-to-login time
+is 18-19 s either way.  The 0.75 s the kernel saves is spent again in udev, so
+this is not in the patch set.  (Three boots per variant, `systemd-analyze`
+`kernel`/`userspace` plus the serial log's banner-to-login delta.)
