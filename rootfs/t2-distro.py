@@ -928,15 +928,28 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path,
     driver forces this stage whenever packages ran.
     """
     log("-- overlay: profile files, modes preserved --")
+    # A profile can ship no overlay at all.  A *reused* stage may still hold
+    # files an earlier overlay run wrote (the ledger), and those have to go -
+    # returning early here would leave them in the stage and in every image
+    # built from it.
+    ledger = stage.parent / "overlay-files.txt"
     if not prof.overlays:
-        log("  [skip] no overlay/ in the profile")
+        pruned = prune_overlay(ledger, stage, set(), dry=R.dry) \
+            if ledger.is_file() else []
+        if not R.dry:
+            ledger.write_text("")
+            stamp_write(stage, "overlay", overlay_hash(prof))
+        log("  [skip] no overlay/ in the profile"
+            + (f"; pruned {len(pruned)} file(s) it no longer ships: "
+               + ", ".join(pruned) if pruned else ""))
+        LAST["overlay"] = {"source": str(prof.overlay), "files": 0,
+                           "sources": [], "pruned": pruned}
         return False
     want = overlay_hash(prof)
     # cp -a only ever adds and overwrites, so on a *reused* stage a file the
     # profile has since deleted would survive silently and ship.  The ledger
     # of paths the previous overlay run wrote is what makes that detectable:
     # a stale file has no reason to share a name with a live one.
-    ledger = stage.parent / "overlay-files.txt"
     # is_file() is False for a symlink, so such a path would be pruned as
     # "stale" immediately after being copied - symlinks are real content
     # (/etc/resolv.conf is shipped as one).
