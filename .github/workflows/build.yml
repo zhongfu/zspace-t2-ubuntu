@@ -1,11 +1,17 @@
 name: Build
 
-# Build the fast subset on pull requests and branch pushes, so breakage shows
-# up before a release.  No artefacts are kept: release.yml does that on a tag.
+# Build the boot chain on pull requests and branch pushes, so breakage shows up
+# before a release.  No artefacts are kept: release.yml does that on a tag.
 #
-# The subset is initramfs + kernel tree + kernel + U-Boot (build-all.sh steps
-# 2..6).  It skips the rootfs and the installer image, which are the slowest
-# and need the most network.  The vendor WiFi/BT firmware is committed in the
+# The boot chain is build-all.sh steps 1 to 6: the vendor firmware, the
+# initramfs that embeds it, the kernel and U-Boot - everything the board needs
+# to boot.  It skips the rootfs and the installer image (steps 7 and 8), which
+# are the slowest and need the most network, and which release.yml builds
+# anyway.  Step 1 is not optional even though it is only verification: it writes
+# the driver-named firmware copies the initramfs embeds.
+#
+# arm64 only: that is what the board is, and GitHub's arm64 runners are free for
+# public repositories.  The vendor WiFi/BT firmware is committed in the
 # repository, so no secret or setup is needed.
 on:
   push:
@@ -22,15 +28,7 @@ concurrency:
 
 jobs:
   build:
-    # Both host architectures: the build has to work on either (docs/building.md).
-    # The arm64 job is where the Dockerfile's per-arch package list and the
-    # cross toolchain get exercised on arm64; GitHub's arm64 runners are free for
-    # public repositories.
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-26.04, ubuntu-26.04-arm]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 240
     steps:
       - name: Check out
@@ -42,5 +40,5 @@ jobs:
                       /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
 
-      - name: Build the fast subset
-        run: ./docker-build.sh ./build-all.sh --from 2 --to 6
+      - name: Build the boot chain (firmware, initramfs, kernel, U-Boot)
+        run: ./docker-build.sh ./build-all.sh --from 1 --to 6

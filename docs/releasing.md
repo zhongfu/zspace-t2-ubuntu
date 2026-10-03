@@ -7,10 +7,10 @@ work:
 * `.github/workflows/release.yml` runs on a `v*` tag.  It builds every
   artefact, then publishes a GitHub release.
 * `.github/workflows/build.yml` runs on pull requests and branch pushes.  It
-  builds a fast subset (`build-all.sh` steps 2 to 6: initramfs, kernel and
-  U-Boot), keeps no artefacts, and skips the slow rootfs and installer steps.
-  It runs on both host architectures (`ubuntu-26.04` and `ubuntu-26.04-arm`),
-  so an arm64-only breakage shows up before a release.
+  builds the boot chain (`build-all.sh` steps 1 to 6: the vendor firmware, the
+  initramfs, the kernel and U-Boot), keeps no artefacts, and skips the rootfs
+  and the installer image.  It runs on `ubuntu-26.04-arm`, the architecture of
+  the board.
 
 Both workflows build in the Docker image from `Dockerfile`, through
 `docker-build.sh`.  `docs/building.md` explains that image and the build steps.

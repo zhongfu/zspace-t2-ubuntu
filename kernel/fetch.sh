@@ -13,7 +13,7 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo=$(CDPATH= cd -- "$here/.." && pwd)
 
-url=${LINUX_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git}
+url=${LINUX_URL:-https://github.com/torvalds/linux.git}
 tag=v7.3-rc5
 
 build=$repo/build
@@ -26,7 +26,7 @@ Usage: $(basename "$0") [-h|--help]
 Clone mainline Linux $tag into $tree.
 
 Environment:
-  LINUX_URL   git URL to clone from (default: kernel.org torvalds/linux)
+  LINUX_URL   git URL to clone from (default: torvalds/linux on GitHub)
 EOF
 }
 
