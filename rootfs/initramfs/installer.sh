@@ -99,6 +99,7 @@ LED_GREEN=${T2_INSTALL_LED_GREEN:-power-led-green}
 WRITE_BLINK_HALF=0.25
 blinker=''
 verifier=''
+stock=''
 CFG_MNT=''
 PAY_MNT=''
 BMNT=''
@@ -225,6 +226,29 @@ start_write_blink() {
 	blinker=''
 	blink_alt &
 	blinker=$!
+}
+
+# Keep the board's own U-Boot environment.  U-Boot loads it from the eMMC's FAT
+# boot partition (CONFIG_ENV_FAT_DEVICE_AND_PART=":3", CONFIG_ENV_FAT_FILE=
+# "uboot.env"), and the flash flow formats that partition, so whatever is there
+# - the vendor's values (a 2 s autoboot countdown, its own boot logic) or a
+# previous install's - is saved to the card first and restored beside our own
+# environment as uboot.env.stock.  The card's copy is written once: the first
+# flash captures the stock environment, later flashes must not replace it with
+# ours.  $1 = a mounted path that may hold uboot.env.
+save_stock_env() {
+	stock="$PAY_MNT/uboot.env.stock"
+	if [ -f "$stock" ]; then
+		log "stock U-Boot environment already saved on the card ($stock)"
+		return 0
+	fi
+	[ -f "$1" ] || return 0
+	if cp "$1" "$stock" 2>/dev/null; then
+		log "stock U-Boot environment saved from $1 to $stock"
+	else
+		stock=''
+		log "warning: could not save the stock U-Boot environment from $1"
+	fi
 }
 
 stop_write_blink() {
@@ -932,6 +956,23 @@ flash_run() {
 		drop_to_shell
 	fi
 
+	# --- the board's own U-Boot environment ---------------------------------
+	# U-Boot loads its environment from the eMMC's FAT boot partition
+	# (CONFIG_ENV_FAT_DEVICE_AND_PART=":3"), and the table rewrite below
+	# re-creates that partition, so read it while it is still there.  The oem
+	# partition is checked as well (the vendor keeps a copy in there), but only
+	# if this one yields nothing: the file on p3 is the one U-Boot actually
+	# loads.  Either way it is saved to the card and restored beside our own
+	# environment as uboot.env.stock on the new partition.
+	oldbootmnt="$PAY_MNT/old-boot"
+	mkdir -p "$oldbootmnt"
+	if mount -t vfat -o ro "${DISK}p3" "$oldbootmnt" 2>/dev/null; then
+		save_stock_env "$oldbootmnt/uboot.env"
+		umount "$oldbootmnt" 2>/dev/null || true
+	else
+		log "no readable FAT on ${DISK}p3; nothing to save from it"
+	fi
+
 	# --- back up the old oem (before the table changes) ---------------------
 	# The vendor table plus its copies; by LABEL first (busybox blkid has no
 	# PARTLABEL), then by the GPT entry name "oem" (the vendor table calls it
@@ -981,6 +1022,7 @@ flash_run() {
 		if mount -o ro "$old_oem" "$oldmnt"; then
 			(cd "$oldmnt" && tar cf - .) | (cd "$dst" && tar xf -) \
 				|| { log "old oem copy failed"; drop_to_shell; }
+			save_stock_env "$oldmnt/uboot.env"
 			umount "$oldmnt"
 			log "old oem ($old_oem) copied to $dst on the card (versioned backup)"
 		else
@@ -1071,6 +1113,11 @@ flash_run() {
 	if [ -f "$TREE/uboot.env" ]; then
 		cp "$TREE/uboot.env" "$BMNT/uboot.env" \
 			|| { log "copying uboot.env to ${DISK}p3 failed"; drop_to_shell; }
+	fi
+	if [ -n "$stock" ] && [ -f "$stock" ]; then
+		cp "$stock" "$BMNT/uboot.env.stock" \
+			|| { log "copying uboot.env.stock to ${DISK}p3 failed"; drop_to_shell; }
+		log "the board's stock U-Boot environment is kept as /uboot.env.stock on ${DISK}p3"
 	fi
 	cp "$TREE/$dtb" "$BMNT/$dtb" \
 		|| { log "copying $dtb to ${DISK}p3 failed"; drop_to_shell; }
