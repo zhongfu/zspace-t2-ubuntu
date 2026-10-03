@@ -32,17 +32,29 @@ Contents (exactly these, nothing else):
     /extlinux/extlinux.conf
     /extlinux/t2-emmc.conf     (only with --out-dir)
     /Image.old                 (only with --fallback-image)
-    /uboot.env                 (only with --fallback-image)
+    /uboot.env                 (when --env-defaults exists; armed only with
+                                --fallback-image)
 
 `--fallback-image <path>` adds the A/B fallback: it copies the previous kernel
 to `/Image.old` and adds the fallback extlinux label (`t2-emmc-old`) that
 boots it with the same cmdline.  The primary entry (`t2-emmc`, `/Image`)
 stays the `default`, so U-Boot's normal bootstd scan is unchanged; only when
 the boot counter exceeds `bootlimit`
-does U-Boot run `altbootcmd`, which loads `/Image.old` directly (env defaults
-compiled into the board defconfig (`u-boot/configs/t2-rk3568_defconfig`).  The
-option is opt-in: without it the image is byte-for-byte the three-file tree it
-always was.
+does U-Boot run `altbootcmd`, which loads `/Image.old` directly (the
+`altbootcmd`/`bootlimit` values are compiled into the board defconfig,
+`u-boot/configs/t2-rk3568_defconfig`).  The
+option is opt-in: without it no `/Image.old` and no fallback extlinux entry are
+written.
+
+`--env-defaults <path>` (default `build/out/u-boot-initial-env` when that file
+exists) writes U-Boot's compiled default environment to `/uboot.env`, which the
+installer copies into the eMMC's FAT boot partition - the place U-Boot reads its
+environment from (`CONFIG_ENV_FAT_DEVICE_AND_PART` / `CONFIG_ENV_FAT_FILE`) - so
+the installed board keeps our `bootdelay`/`preboot`/`bootcmd` instead of the
+vendor's values.  The blob is the compiled defaults verbatim; with
+`--fallback-image` it also carries `upgrade_available=1`/`bootcount=0`, arming
+the A/B boot counter for the kernel just written (`altbootcmd` fatloads
+`/Image.old`, so the counter is armed only when that kernel is shipped).
 
 The default `--append` is the defect-D1-safe spelling: `root=LABEL=zspace-rootfs`,
 never the short `PARTUUID=` form.  A short PARTUUID was measured to resolve to
@@ -194,10 +206,13 @@ def probe(*argv: object) -> subprocess.CompletedProcess:
     return subprocess.run([str(a) for a in argv], capture_output=True, text=True)
 
 
-def check_inputs(image: Path, dtb: Path, fallback: Path | None = None) -> None:
+def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
+                 env_defaults: Path | None = None) -> None:
     pairs = [("--image", image), ("--dtb", dtb)]
     if fallback is not None:
         pairs.append(("--fallback-image", fallback))
+    if env_defaults is not None:
+        pairs.append(("--env-defaults", env_defaults))
     for what, p in pairs:
         if not p.exists():
             die(f"{what} {p}: no such file")
@@ -207,6 +222,8 @@ def check_inputs(image: Path, dtb: Path, fallback: Path | None = None) -> None:
         die(f"--image {image}: empty file")
     if fallback is not None and fallback.stat().st_size == 0:
         die(f"--fallback-image {fallback}: empty file")
+    if env_defaults is not None and env_defaults.stat().st_size == 0:
+        die(f"--env-defaults {env_defaults}: empty file")
 
 
 def validate(label: str, dtb_name: str, append: str,
@@ -286,11 +303,19 @@ def conf_pair(dtb_name: str, append: str, flash_append: str | None,
             conf_text(dtb_name, append, flash_append, CONF_LABEL, fallback))
 
 
-def env_blob(defaults: Path) -> bytes:
-    """The `/uboot.env` blob to ship with an A/B kernel.
+def env_blob(defaults: Path, arm: bool = False) -> bytes:
+    """The `/uboot.env` blob: the board build's compiled default environment.
 
     `defaults` is the board build's compiled default environment
-    (`u-boot-initial-env`); the blob keeps it whole and changes two values:
+    (`u-boot-initial-env`); the blob keeps it whole, so U-Boot keeps
+    `bootdelay`, `preboot`, `bootcmd`, `altbootcmd`, `bootlimit` and the
+    memory addresses - a blob that dropped them would leave the board unable
+    to boot at all.  U-Boot loads this file from the eMMC's FAT boot partition
+    (`CONFIG_ENV_FAT_DEVICE_AND_PART` / `CONFIG_ENV_FAT_FILE`), so writing it
+    is what gives a freshly installed board *our* values instead of whatever
+    the vendor left behind there.
+
+    `arm` (set from `--fallback-image`) additionally writes:
 
       * `upgrade_available=1` - arms the boot counter for the kernel just
         written.  `bootcount_env.c` only persists a count while
@@ -298,8 +323,11 @@ def env_blob(defaults: Path) -> bytes:
         without this the fallback never triggers;
       * `bootcount=0` - start the count at zero.
 
-    Writing this file is what makes a freshly flashed eMMC protected on its
-    very first boot, before any userspace has run.
+    Arming is only safe when the fallback kernel is in the tree: `altbootcmd`
+    fatloads `/Image.old`, so an armed counter with no `/Image.old` would run
+    the board into a missing file after `bootlimit=3` boots.  Without `arm`
+    the compiled defaults are written verbatim, with no `upgrade_available`
+    and no `bootcount` added.
     """
     entries = {}
     for line in defaults.read_text().splitlines():
@@ -308,8 +336,9 @@ def env_blob(defaults: Path) -> bytes:
             continue
         key, _, val = line.partition("=")
         entries[key] = val
-    entries["upgrade_available"] = "1"
-    entries["bootcount"] = "0"
+    if arm:
+        entries["upgrade_available"] = "1"
+        entries["bootcount"] = "0"
     data = b"".join(f"{k}={v}\0".encode() for k, v in entries.items())
     if len(data) > ENV_DATA_SIZE:
         die(f"environment does not fit /{ENV_NAME} "
@@ -371,6 +400,28 @@ def fat_bytes(out: Path, member: str, tmp: Path) -> bytes:
     return tmp.read_bytes()
 
 
+def env_checks(got: bytes, want: bytes) -> list:
+    """The `/uboot.env` read-back checks, shared by `verify()` and
+    `verify_tree()`.
+
+    They assert the file is the blob we generated *and* that it carries
+    `upgrade_available` only when a fallback kernel was shipped: an unarmed
+    blob (no `--fallback-image`) must not contain it, or `bootcount_env.c`
+    would start counting toward a `/Image.old` that is not in the tree.
+    """
+    armed = b"upgrade_available=1\0" in want
+    present = b"upgrade_available=" in got
+    return [
+        (f"/{ENV_NAME} == {'armed' if armed else 'unarmed'} env blob "
+         f"({len(want)} B)",
+         got == want, f"{len(got)} of {len(want)} bytes read back"),
+        (f"/{ENV_NAME} {'arms' if armed else 'does not arm'} the A/B counter",
+         present == armed,
+         f"upgrade_available {'present' if present else 'absent'} "
+         f"(expected {'present' if armed else 'absent'})"),
+    ]
+
+
 def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
            fallback: Path | None = None, env: bytes | None = None) -> list:
     """Read the finished image back with mtools; return (name, ok, detail)."""
@@ -428,10 +479,7 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
                        f"{len(got)} of {len(conf)} bytes read back"))
         if env is not None:
             got = fat_bytes(out, ENV_NAME, tmpd / ENV_NAME)
-            checks.append((f"/{ENV_NAME} == armed env blob ({len(env)} B)",
-                           got == env,
-                           f"{len(got)} of {len(env)} bytes read back, "
-                           f"upgrade_available=1"))
+            checks.extend(env_checks(got, env))
     # The FDT path is the one thing a reader of the FAT image does not itself
     # check, so assert the generated text really names the DTB that was written.
     fdt_line = next((l for l in conf.decode().splitlines()
@@ -512,10 +560,7 @@ def verify_tree(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
                        f"({p.stat().st_size:,} of {src.stat().st_size:,} B)"))
     if env is not None and (out_dir / ENV_NAME).is_file():
         got = (out_dir / ENV_NAME).read_bytes()
-        checks.append((f"/{ENV_NAME} == armed env blob ({len(env)} B)",
-                       got == env,
-                       f"{len(got)} of {len(env)} bytes read back, "
-                       f"upgrade_available=1"))
+        checks.extend(env_checks(got, env))
     got_card = (out_dir / CONF_DIR / CONF_NAME).read_bytes()
     got_emmc = (out_dir / CONF_DIR / EMMC_CONF_NAME).read_bytes()
     checks.append((f"/{CONF_DIR}/{CONF_NAME} == card descriptor",
@@ -548,8 +593,9 @@ def main() -> int:
                          f"{FLASH_LABEL} with --flash-append) and "
                          f"/{CONF_DIR}/{EMMC_CONF_NAME} (eMMC descriptor, "
                          f"default {CONF_LABEL}), plus "
-                         f"/{FALLBACK_KERNEL_NAME} and /{ENV_NAME} with "
-                         "--fallback-image.  No FAT image is written")
+                         f"/{FALLBACK_KERNEL_NAME} with --fallback-image and "
+                         f"/{ENV_NAME} from --env-defaults (armed only with "
+                         "--fallback-image).  No FAT image is written")
     ap.add_argument("--image", type=Path, required=True,
                     help="kernel Image, copied to /Image")
     ap.add_argument("--dtb", type=Path, required=True,
@@ -559,14 +605,18 @@ def main() -> int:
                          f"{FALLBACK_KERNEL_NAME} and add the "
                          f"{FALLBACK_LABEL} extlinux entry, so U-Boot's "
                          "bootcount fallback (altbootcmd) has something to "
-                         "boot.  Not written when absent")
-    ap.add_argument("--env-defaults", type=Path, default=ENV_DEFAULTS,
+                         f"boot, and arm /{ENV_NAME}'s boot counter "
+                         "(upgrade_available=1, bootcount=0).  Not written "
+                         "when absent")
+    ap.add_argument("--env-defaults", type=Path, default=None,
                     help="the board build's compiled default environment "
-                         f"(default {ENV_DEFAULTS.relative_to(REPO)}): with "
-                         "--fallback-image it is written to /"
-                         f"{ENV_NAME} with upgrade_available=1 and "
-                         "bootcount=0, arming the boot counter for the kernel "
-                         "just written")
+                         "(`make u-boot-initial-env` output; default "
+                         f"{ENV_DEFAULTS.relative_to(REPO)} when that file "
+                         f"exists): written to /{ENV_NAME} verbatim, so the "
+                         "board gets its own bootdelay/preboot/bootcmd.  With "
+                         "--fallback-image it also gets upgrade_available=1 "
+                         "and bootcount=0, arming the boot counter for the "
+                         "kernel just written")
     ap.add_argument("--label", default=DEFAULT_LABEL,
                     help=f"FAT volume label (default {DEFAULT_LABEL})")
     ap.add_argument("--append", default=DEFAULT_APPEND,
@@ -594,22 +644,29 @@ def main() -> int:
 
     if args.default_entry == FLASH_LABEL and args.flash_append is None:
         die(f"--default-entry {FLASH_LABEL} needs --flash-append")
-    check_inputs(args.image, args.dtb, args.fallback_image)
+
+    fallback = args.fallback_image
+    # Ship the board's compiled default environment as /uboot.env whenever the
+    # build has one.  U-Boot reads its environment from the eMMC's FAT boot
+    # partition (CONFIG_ENV_FAT_DEVICE_AND_PART / CONFIG_ENV_FAT_FILE), so this
+    # file is what gives a freshly installed board our bootdelay/preboot/bootcmd
+    # instead of whatever the vendor left there - no --fallback-image needed.
+    # build-installer.sh passes --env-defaults whenever the file exists.
+    env_src = args.env_defaults if args.env_defaults is not None else ENV_DEFAULTS
+    if not env_src.exists():
+        if args.env_defaults is not None or fallback is not None:
+            why = ("; required with --fallback-image to arm the A/B boot "
+                   "counter" if fallback is not None else "")
+            die(f"--env-defaults {env_src}: no such file (a U-Boot build's "
+                f"`make u-boot-initial-env` output{why})")
+        env_src = None
+    check_inputs(args.image, args.dtb, fallback, env_src)
     dtb_name = args.dtb.name
     validate(args.label, dtb_name, args.append, args.flash_append)
 
-    fallback = args.fallback_image
-    env = None
-    if fallback is not None:
-        # Arm the counter *in the tree*: a freshly flashed eMMC must be
-        # protected on its first boot, before any userspace has run.  The
-        # committed blob is U-Boot's own compiled default env plus
-        # upgrade_available=1 / bootcount=0, so U-Boot keeps bootcmd,
-        # altbootcmd, bootlimit and the memory addresses.
-        if not args.env_defaults.exists():
-            die(f"--env-defaults {args.env_defaults}: no such file (a "
-                f"U-Boot build's `make u-boot-initial-env` output)")
-        env = env_blob(args.env_defaults)
+    # Arming is tied to the fallback kernel: altbootcmd fatloads /Image.old, so
+    # with no fallback in the tree the compiled defaults go in verbatim.
+    env = env_blob(env_src, fallback is not None) if env_src is not None else None
 
     if args.out_dir is not None:
         card_conf, emmc_conf = conf_pair(dtb_name, args.append,
@@ -624,7 +681,10 @@ def main() -> int:
         if fallback is not None:
             files.append((f"/{FALLBACK_KERNEL_NAME}",
                           fallback.stat().st_size))
-            files.append((f"/{ENV_NAME}", len(env)))
+        if env is not None:
+            files.append((f"/{ENV_NAME}"
+                          + (" (armed)" if fallback is not None
+                             else " (verbatim)"), len(env)))
         files += [(f"/{dtb_name}", args.dtb.stat().st_size),
                   (f"/{CONF_DIR}/{CONF_NAME}", len(card_conf)),
                   (f"/{CONF_DIR}/{EMMC_CONF_NAME}", len(emmc_conf))]
@@ -675,7 +735,10 @@ def main() -> int:
     files = [(f"/{KERNEL_NAME}", args.image.stat().st_size)]
     if fallback is not None:
         files.append((f"/{FALLBACK_KERNEL_NAME}", fallback.stat().st_size))
-        files.append((f"/{ENV_NAME}", len(env)))
+    if env is not None:
+        files.append((f"/{ENV_NAME}"
+                      + (" (armed)" if fallback is not None
+                         else " (verbatim)"), len(env)))
     files += [(f"/{dtb_name}", args.dtb.stat().st_size),
               (f"/{CONF_DIR}/{CONF_NAME}", len(conf))]
     for name, n in files:

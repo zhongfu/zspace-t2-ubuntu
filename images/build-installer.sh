@@ -16,8 +16,11 @@
 # Inputs (all required, all under build/out/):
 #   Image             rk3568-t2.dtb     u-boot.itb
 #   idbloader.img     rootfs.ext4.zst
-# Optional: Image.old and u-boot-initial-env, when present, arm the A/B kernel
-# fallback (they are added to the tree automatically).
+# Optional: u-boot-initial-env is added to the tree as /uboot.env whenever it
+# exists, so the installed board keeps our default environment (bootdelay,
+# preboot, bootcmd) instead of the vendor's; Image.old additionally adds the
+# A/B fallback and arms /uboot.env's boot counter.  Both are opt-in and added
+# automatically.
 #
 # Output: build/out/installer.img (write it to an SD card with `dd`).
 #
@@ -80,12 +83,25 @@ rm -rf "$TREE" "$PAYLOAD"
 log "building the boot tree (t2-boot-fat.py --out-dir)"
 boot_args=(--image "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" --out-dir "$TREE"
 	--flash-append t2.mode=flash)
-if [ -f "$OUT/Image.old" ] && [ -f "$OUT/u-boot-initial-env" ]; then
-	log "  adding the A/B fallback (/Image.old + armed /uboot.env)"
-	boot_args+=(--fallback-image "$OUT/Image.old"
-		--env-defaults "$OUT/u-boot-initial-env")
+# /uboot.env carries the board's own compiled default environment; U-Boot reads
+# its environment from the eMMC's FAT boot partition, so shipping it is what
+# replaces whatever the vendor left there.  install.sh copies it into the new
+# p3 when the tree has it.
+if [ -f "$OUT/u-boot-initial-env" ]; then
+	boot_args+=(--env-defaults "$OUT/u-boot-initial-env")
+	log "  adding /uboot.env (the board's compiled default environment)"
 else
-	log "  no Image.old/u-boot-initial-env: the tree ships without the A/B fallback"
+	log "  no u-boot-initial-env: the tree ships without /uboot.env"
+fi
+# The A/B fallback needs a kernel to fall back to, and arming the boot counter
+# is only safe with that kernel in the tree (altbootcmd fatloads /Image.old).
+if [ -f "$OUT/Image.old" ]; then
+	[ -f "$OUT/u-boot-initial-env" ] \
+		|| die "$OUT/Image.old needs $OUT/u-boot-initial-env to arm the A/B boot counter"
+	log "  adding the A/B fallback: /Image.old + armed /uboot.env"
+	boot_args+=(--fallback-image "$OUT/Image.old")
+else
+	log "  no Image.old: the tree ships without the A/B fallback"
 fi
 "$PY" "$HERE/t2-boot-fat.py" "${boot_args[@]}" || die "t2-boot-fat.py failed"
 
