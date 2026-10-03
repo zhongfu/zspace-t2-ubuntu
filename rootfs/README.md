@@ -1,11 +1,12 @@
 # Ubuntu rootfs
 
 This subtree builds a stock Ubuntu ARM64 rootfs for the ZSpace T2 with the
-board support files the bring-up needs.  It has three parts:
+board support files the bring-up needs.  It has four parts:
 
 | Path | Contents |
 |---|---|
 | `profiles/t2-base/` | the profile: the Ubuntu base tarball, the package list, the overlay files and the build hooks |
+| `packages/t2-utils/` | the board userspace as a Debian package: the payload tree, its control metadata and `build.sh` |
 | `initramfs/` | the bring-up initramfs source (BusyBox, `init`, the card installer, firmware, build script) |
 | `firmware/` | where `fetch.sh` puts the non-redistributable vendor WiFi/BT blobs |
 
@@ -28,10 +29,31 @@ the whole flow.  The shared pipeline code lives once at `<repo>/lib/`
   (`build/firmware`, staged by `build.sh`) and the boot-FIT freshness check.
 * `t2-config.example` - the documented `t2-config` keys for out-of-band
   provisioning.  Copy it to a FAT partition labelled `T2-CONFIG`.
-* `overlay/` - files copied verbatim into the image (modes preserved).
+* `overlay/` - the files copied verbatim into the image; it now carries only
+  `etc/u-boot-initial-env` (see below).
 * `hooks/` - scripts run in the chroot, ascending, after the packages.
 
-### overlay/
+### packages/t2-utils/
+
+The board userspace files are a real Debian package, `t2-utils`, built by
+`t2-distro.py` (the `debs` stage) from this directory:
+
+* `root/` - the payload, at the same paths it lands in the image (the
+  `/usr/local/sbin` helpers and the `/etc` drop-ins below).  Modes are
+  preserved; `dpkg-deb --root-owner-group` normalises the ownership.
+* `control.in` - the control template; the driver fills in `@VERSION@` (the
+  profile's base release, sanitised) and `@INSTALLED_SIZE@`.
+* `conffiles` - every `/etc` file the package ships, so local edits survive an
+  upgrade.  (`/etc/resolv.conf` is a symlink to systemd-resolved's stub and is
+  deliberately not a conffile: dpkg conffiles are regular files.)
+* `postinst` - re-enables the units on install/upgrade; idempotent and
+  non-fatal, never starts anything.
+* `build.sh` - assembles the `.deb` with `dpkg-deb --build` (no debhelper: the
+  build image has dpkg but no dpkg-dev).  `SOURCE_DATE_EPOCH` pins member
+  mtimes, so the same tree builds the same bytes.  Run it by hand as
+  `build.sh [VERSION] [OUT.deb]`.
+
+The payload (moved here from `overlay/`, same paths and content):
 
 Systemd units (enabled by `hooks/30-services.sh` unless noted):
 
@@ -83,6 +105,56 @@ Helpers in `/usr/local/sbin/`:
 * `t2-provision.sh` - applies the config partition.
 * `t2-sethostname` - sets the hostname and keeps `/etc/hosts` in step.
 * `t2-usbgadget.sh` - the USB gadget supervisor.
+
+### overlay/
+
+After the package move this directory carries a single file,
+`etc/u-boot-initial-env`, copied verbatim by the `overlay` stage (modes
+preserved).  It is a *snapshot* of the compiled U-Boot default environment
+(`build/out/u-boot-initial-env`, produced by `u-boot/build.sh`); it is kept
+here for now and is not part of `t2-utils`.
+
+## The in-image apt repository (`t2-utils`)
+
+The `debs` stage of `t2-distro.py` builds `packages/t2-utils/` into a `.deb`,
+drops it into a flat apt repository inside the image at `/opt/t2/repo` (with a
+generated `Packages` index), writes
+`/etc/apt/sources.list.d/t2.list`:
+
+```
+deb [trusted=yes] file:/opt/t2/repo ./
+```
+
+and installs the package *from that repository* in the chroot.  So the image
+ships both the installed package and the repository it came from, and every
+build exercises the offline path a running board uses (`trusted=yes` is what
+lets apt use the repo without a Release signature; it carries the image's own
+package, not a third-party feed).
+
+The package version is the profile's base release (`base.json` `release`,
+sanitised), so `apt-get upgrade` only supersedes an installed `t2-utils` once
+that release changes.  A same-version rebuild reaches the image through the
+`debs` stage's `--reinstall`; on a board, install the new `.deb` file directly
+(below).
+
+On a running board, the same-version reinstall or an upgrade to a version the
+index lists works with no network:
+
+```sh
+apt-get update
+apt-cache policy t2-utils
+apt-get install --reinstall -y t2-utils      # or: apt-get upgrade
+```
+
+For a *newer* build without reflashing, copy the `.deb` to the board and
+install the file directly (apt resolves its dependencies against what is
+already installed, so no repository refresh is needed):
+
+```sh
+rootfs/packages/t2-utils/build.sh 26.04.2 /tmp/t2-utils_26.04.2_all.deb
+scp /tmp/t2-utils_26.04.2_all.deb root@<board>:/tmp/
+ssh root@<board> 'apt-get install -y /tmp/t2-utils_26.04.2_all.deb'
+```
 
 ### hooks/
 

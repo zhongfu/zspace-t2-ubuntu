@@ -11,6 +11,8 @@ ext4 image without host root and without a board:
     tools     qemu-user-static + proot, fetched unprivileged, then *proved*
     packages  policy-rc.d + apt-get update && apt-get install, inside the chroot
     overlay   overlay/** copied verbatim into the stage
+    debs      build the board userspace .deb, ship it in the image's own apt
+              repo (/opt/t2/repo) and install it from there in the chroot
     hooks     hooks/NN-*.sh, ascending, inside the chroot
     modules   the FIT kernel's modules, installed into the stage
     image     fakeroot + mke2fs -d -> <out>/<artifact>
@@ -76,7 +78,7 @@ parse_size = T2B.parse_size
 artifact = T2B.artifact        # {name, path, size, sha256}
 flash_plan = T2B.flash_plan    # rockusb `wl` chunk arithmetic
 
-STAGES = ("base", "tools", "packages", "overlay", "hooks", "modules",
+STAGES = ("base", "tools", "packages", "overlay", "debs", "hooks", "modules",
           "image", "verify", "manifest")
 
 # Unprivileged tool fetch.  `apt-get download` + `dpkg-deb -x` needs no root
@@ -109,6 +111,15 @@ RESOLV_CONF = Path("/etc/resolv.conf")
 # The profile's inputs that hooks read through the read-only /t2-profile
 # bind (image.json: firmware_src is a repo-root relative path).
 PROFILE_MNT = "/t2-profile"
+# The board userspace ships as a real Debian package.  rootfs/packages/<name>/
+# is its source: the payload tree under root/ plus DEBIAN metadata and the
+# build.sh that assembles the .deb.  The driver builds it, drops the .deb into
+# a flat apt repo *inside the image* (REPO_DIR) and installs it from that repo,
+# so the build exercises the same offline `apt-get install/upgrade` a running
+# board uses.
+PACKAGE = "t2-utils"
+PACKAGE_DIR = SCRIPTS / "packages" / PACKAGE
+REPO_DIR = "/opt/t2/repo"
 # Per-stage freshness stamps, kept *inside* <out>/stage so that wiping the
 # stage (a changed base tarball) also drops them and forces every stage to
 # re-run.  They are build metadata, not image content, so the image stage lifts
@@ -540,7 +551,7 @@ class Chroot:
     the image is built.
     sudo (opt-in): a real chroot with real bind mounts, ~10x faster, needs
     a password on this host and is therefore never the default.
-    none: no chroot at all (overlay/hooks/image only).
+    none: no chroot at all (overlay/image only; hooks and debs skip)
     """
 
     HOST_BINDS = ("/proc", "/dev", "/sys")
@@ -940,7 +951,8 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path,
                            "sources": [str(o) for o in prof.overlays],
                            "pruned": []}
         return False
-    pruned = prune_overlay(ledger, stage, shipped) if ledger.is_file() else []
+    pruned = prune_overlay(ledger, stage, shipped, dry=R.dry) \
+        if ledger.is_file() else []
     if R.dry:
         for ov in prof.overlays:
             log(f"  [dry] would cp -a {ov}/. {stage}/")
@@ -967,22 +979,164 @@ def stage_overlay(args, R: Runner, prof: Profile, stage: Path,
     return True
 
 
-def prune_overlay(ledger: Path, stage: Path, shipped: set) -> list:
+def prune_overlay(ledger: Path, stage: Path, shipped: set,
+                  dry: bool = False) -> list:
     """Delete staged files an earlier overlay run wrote and this one no
     longer ships (`ledger` minus `shipped`).
 
     Scoped to the ledger on purpose: those paths are files this profile's own
     overlay put in the stage, so a package-owned file elsewhere in the tree
-    cannot be reached even by accident.
+    cannot be reached even by accident.  `dry` only reports: a --dry-run must
+    never mutate the stage.
     """
     stale = set(ledger.read_text().split()) - shipped
     pruned = []
     for rel in sorted(stale):
         target = stage / rel
-        if target.is_file():
-            pruned.append(rel)
-            target.unlink()
+        # a symlink is real overlay content (/etc/resolv.conf ships as one),
+        # so it has to be pruned too - and is_file() follows it
+        if not (target.is_file() or target.is_symlink()):
+            continue
+        pruned.append(rel)
+        if dry:
+            continue
+        target.unlink()
+        # a directory the overlay created only to hold this file must go
+        # with it, or an emptied __pycache__ would still ship
+        parent = target.parent
+        while parent != stage and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
     return pruned
+
+
+# --------------------------------------------------------------------------
+# stage: debs
+# --------------------------------------------------------------------------
+def package_version(prof: Profile) -> str:
+    """The t2-utils Debian version: the profile's base release, sanitised.
+
+    The rootfs build already derives this string (base.json `release`; the
+    manifest records it under `base`), and tying the package version to the
+    distro release it was built against is the one version number the profile
+    owns.  A Debian version may carry [0-9A-Za-z.+~], so anything else is
+    dropped; a profile with no release falls back to the documented
+    `0.1.0~<git describe --tags --always --dirty>`.
+    """
+    rel = re.sub(r"[^0-9A-Za-z.+~]", "", str(prof.base.get("release") or ""))
+    if rel:
+        return rel
+    out = subprocess.run(
+        ["git", "-C", str(ROOT), "describe", "--tags", "--always", "--dirty"],
+        capture_output=True, text=True).stdout.strip() or "unknown"
+    return "0.1.0~" + re.sub(r"[^0-9A-Za-z.+~]", "", out)
+
+
+def write_repo(stage: Path, deb: Path) -> Path:
+    """A flat apt repo inside the image: REPO_DIR plus its Packages index.
+
+    Built by hand rather than with dpkg-scanpackages: the build image has no
+    dpkg-dev, and one package needs one Packages entry.  The index fields come
+    from the .deb's own control; the long description must stay last, or apt
+    reads the Filename/size/hash lines as more description text (ordering is
+    what dpkg-scanpackages produces).  `[trusted=yes]` in the source line lets
+    apt use it without a Release signature - the repo ships the image's own
+    package, not a third-party feed.
+    """
+    repo = stage / REPO_DIR.lstrip("/")
+    if repo.exists():
+        shutil.rmtree(repo)
+    repo.mkdir(parents=True)
+    local = repo / deb.name
+    shutil.copy2(deb, local)
+
+    control = subprocess.run(["dpkg-deb", "-f", str(local)],
+                             capture_output=True, text=True,
+                             check=True).stdout.splitlines()
+    idx = next(i for i, l in enumerate(control)
+               if l.startswith("Description:"))
+    head, desc = control[:idx], control[idx:]
+    head += [f"Filename: ./{local.name}", f"Size: {local.stat().st_size}"]
+    # a Packages entry spells the digest fields MD5sum and SHA256 (no "sum")
+    for field, digest in (("MD5sum", hashlib.md5), ("SHA256", hashlib.sha256)):
+        h = digest()
+        with local.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        head.append(f"{field}: {h.hexdigest()}")
+    (repo / "Packages").write_text("\n".join(head + desc) + "\n\n")
+
+    src = stage / "etc/apt/sources.list.d/t2.list"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(f"deb [trusted=yes] file:{REPO_DIR} ./\n")
+    return local
+
+
+def deb_facts(local: Path, version: str) -> dict:
+    return {"package": PACKAGE, "version": version,
+            "deb": f"{REPO_DIR}/{local.name}", "sha256": sha256_file(local),
+            "repo": REPO_DIR, "installed": True}
+
+
+def stage_debs(args, R: Runner, prof: Profile, stage: Path, ch: Chroot,
+               force: bool = False) -> bool:
+    """Build t2-utils, ship it in the image's apt repo, install it from there.
+
+    The package now provides the board files the profile overlay used to copy
+    verbatim, so this stage replaces that copy: it is the same content at the
+    same paths, owned by dpkg.  Installing from the file: repo is deliberate -
+    the path a running board takes (`apt-get install/upgrade t2-utils`) is what
+    the build exercises, and the repo it reads ships in the image.
+
+    `force` re-installs even when the stamp matches: the overlay stage prunes
+    the paths the package now owns, so a run that rebuilt the overlay (or the
+    packages under it) must put them back.
+    """
+    version = package_version(prof)
+    want = f"{PACKAGE} {version} {tree_hash([PACKAGE_DIR])}"
+    repo = stage / REPO_DIR.lstrip("/")
+    local = repo / f"{PACKAGE}_{version}_all.deb"
+    log(f"-- debs: build {PACKAGE} {version}, assemble {REPO_DIR}, apt install "
+        "--")
+    if args.backend == "none":
+        log("  [skip] backend none: cannot install in the chroot")
+        LAST["debs"] = {"package": PACKAGE, "version": version,
+                        "installed": False}
+        return False
+    if R.dry:
+        log(f"  [dry] would build {PACKAGE}_{version}_all.deb and install it "
+            f"from {REPO_DIR}")
+        return False
+    if not force and stamp_read(stage, "debs") == want and local.is_file() \
+            and (stage / "var/lib/dpkg/info" / f"{PACKAGE}.list").is_file():
+        log(f"  [skip] debs: unchanged "
+            f"({short(stamp_path(stage, 'debs'))})")
+        LAST["debs"] = deb_facts(local, version)
+        return False
+
+    deb = args.out.resolve() / "repo" / f"{PACKAGE}_{version}_all.deb"
+    deb.parent.mkdir(parents=True, exist_ok=True)
+    R.run([str(PACKAGE_DIR / "build.sh"), version, str(deb)])
+    local = write_repo(stage, deb)
+    log(f"  {short(local)} ({local.stat().st_size:,} B)")
+    LAST["debs"] = deb_facts(local, version)
+
+    # Install with NO /etc/resolv.conf bind: the source is file:, so apt needs
+    # no DNS, and the package ships /etc/resolv.conf itself - dpkg cannot
+    # replace a file the chroot bind-mounted over it (proot refuses to unlink a
+    # bind source).
+    inst = Chroot(args.backend, stage, [], CHROOT_ENV | prof.hook_env(),
+                  proot=ch.proot, qemu=ch.qemu)
+    apt_opts = ("-o Dir::Etc::sourcelist=sources.list.d/t2.list "
+                "-o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 "
+                "-o Acquire::Languages=none")
+    inst.run(R, "set -e\napt-get update " + apt_opts)
+    # --reinstall, so a rebuilt .deb with the same version still lands
+    inst.run(R, f"set -e\napt-get install -y --reinstall {PACKAGE}")
+    if not (stage / "var/lib/dpkg/info" / f"{PACKAGE}.list").is_file():
+        die(f"{PACKAGE} was not installed into the stage")
+    stamp_write(stage, "debs", want)
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -1728,6 +1882,7 @@ def write_manifest(out: Path, prof: Profile, args, tools: dict,
         "tools": tools or prev.get("tools", {}),
         "packages": fact("packages"),
         "overlay": fact("overlay"),
+        "debs": fact("debs"),
         "modules": LAST.get("modules") or prev.get("modules"),
         "hooks": fact("hooks", []),
         "image": LAST.get("image") or prev.get("image"),
@@ -1944,10 +2099,10 @@ def main() -> int:
 
     # Freshness: a stage whose stamped inputs still match is not re-run, and a
     # stage that does run makes the stages consuming its result run too
-    # (packages -> overlay -> hooks).  A changed base tarball wipes the stage
-    # tree, which drops every stamp, so a full rebuild follows.  tools only
-    # fetches host binaries and never touches the tree; image/verify/manifest
-    # always run against it.
+    # (packages -> overlay -> debs -> hooks).  A changed base tarball wipes the
+    # stage tree, which drops every stamp, so a full rebuild follows.  tools
+    # only fetches host binaries and never touches the tree; image/verify/
+    # manifest always run against it.
     ran = False
     if on("base"):
         ran = stage_base(args, R, prof, stage) or ran
@@ -1957,6 +2112,8 @@ def main() -> int:
         ran = stage_packages(args, R, prof, ch) or ran
     if on("overlay"):
         ran = stage_overlay(args, R, prof, stage, force=ran) or ran
+    if on("debs"):
+        ran = stage_debs(args, R, prof, stage, ch, force=ran) or ran
     if on("hooks"):
         ran = stage_hooks(args, R, prof, hook_ch, force=ran) or ran
     if on("modules"):

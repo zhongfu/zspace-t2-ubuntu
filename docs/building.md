@@ -24,7 +24,7 @@ Build on a Linux x86-64 host with about 40 GB free.  Install these packages
 | `curl`, `tar` | fetch and unpack the Ubuntu base tarball |
 | `bzip2` | unpack the pinned BusyBox source (`.tar.bz2`) |
 | `qemu-user-static`, `proot` | run the arm64 chroot for package installation |
-| `dpkg-deb`, `apt-get` | extract `qemu-user-static` and install packages in the chroot |
+| `dpkg-deb`, `apt-get` | build the `t2-utils` package, extract `qemu-user-static`, install packages in the chroot |
 
 Notes:
 
@@ -48,7 +48,7 @@ Run the entry points from the repository root, in this order.  Each script has
 | 4 | `kernel/build.sh` | `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules/` |
 | 5 | `u-boot/fetch.sh` | `build/uboot` (`v2026.07`), `build/rkbin` (BL31 and DDR blobs) |
 | 6 | `u-boot/build.sh` | `build/out/u-boot.itb`, `idbloader.img`, `u-boot-installer.itb`, `idbloader-installer.img`, `u-boot-initial-env`, `u-boot-installer-initial-env` |
-| 7 | `rootfs/build.sh` | `build/out/rootfs.ext4` |
+| 7 | `rootfs/build.sh` | `build/out/rootfs.ext4` (with `t2-utils` installed from the in-image `/opt/t2/repo`) |
 | 8 | `images/build-installer.sh` | `build/out/installer.img` |
 
 ```sh
@@ -119,7 +119,7 @@ its inputs):
 | 2 | `step2-initramfs.sha256` | the `rootfs/initramfs/` tree (its output is embedded in the kernel Image, so a changed `init` or `installer.sh` must invalidate step 4 too) |
 | 4 | `step4-kernel.sha256` | `kernel/` scripts, config and patches, `build/initramfs`, the kernel tree's HEAD |
 | 6 | `step6-uboot.sha256` | `u-boot/` scripts, configs, DTS and patches, the rkbin blobs, the U-Boot tree's HEAD |
-| 7 | `step7-rootfs.sha256` | the `rootfs/profiles/t2-base` tree, `rootfs/firmware/`, `rootfs/initramfs/firmware/`, the rootfs scripts and `lib/`, `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules` |
+| 7 | `step7-rootfs.sha256` | the `rootfs/profiles/t2-base` tree, the `rootfs/packages/` source, `rootfs/firmware/`, `rootfs/initramfs/firmware/`, the rootfs scripts and `lib/`, `build/out/Image`, `build/out/rk3568-t2.dtb`, `build/out/modules` |
 | 8 | `step8-installer.sha256` | `images/` tools and the config template, `Image`, `rk3568-t2.dtb`, `u-boot.itb`, `idbloader.img`, `rootfs.ext4.zst` (plus `Image.old`/`u-boot-initial-env` when present) |
 
 Step 8 consumes the U-Boot artefacts and step 7 does not, so a change to a
@@ -138,14 +138,15 @@ re-run only rebuilds the stages whose inputs changed:
 | base | the pinned base tarball sha256 | the tarball in `profile/base.json` changes |
 | packages | the sha256 of `packages.txt` | a package is added, removed or renamed |
 | overlay | the hash of the profile `overlay/` tree | an overlay file is edited, added or removed |
+| debs | the `rootfs/packages/t2-utils` tree hash and the package version | a payload file, `control.in`, `conffiles`, `postinst` or `build.sh` changes, or the profile's base release changes |
 | hooks | the hash of the hook scripts, the hook environment and the firmware tree | a hook is edited, or the firmware changes |
 | modules | the kernel tree's `.config` sha256, its release, and the hash of its built `.ko` | the kernel config or release changes, or a source/patches edit rebuilds the modules (a patch edit keeps the config and release identical, so the `.ko` hash is what catches it) |
 
 A rebuilt stage cascades into the stages that read its result: a packages
-rebuild re-runs overlay and hooks; an overlay rebuild re-runs hooks; a changed
-base tarball wipes the whole stage, so every stage re-runs (including the 35
-package apt install).  The stamps are lifted out around `mke2fs`, so they never
-land in the image.
+rebuild re-runs overlay, debs and hooks; an overlay rebuild re-runs debs and
+hooks; a debs rebuild re-runs hooks; a changed base tarball wipes the whole
+stage, so every stage re-runs (including the 35 package apt install).  The
+stamps are lifted out around `mke2fs`, so they never land in the image.
 
 To force a full rootfs rebuild, delete the stage tree (the stamps go with it):
 
@@ -164,6 +165,30 @@ that had to rebuild overlay + hooks + modules (base and packages adopted from
 the previous build's manifest) took **106 s wall**.  A full `build-all.sh` whose
 inputs were all unchanged - steps 4, 6, 7 and 8 all stamped - finished in
 **1.4 s wall**, against the reference full run's 1698 s (`manifest.json`).
+
+## The board userspace package (`t2-utils`)
+
+The board support files (systemd units, `/etc` drop-ins, `/usr/local/sbin`
+helpers) are a Debian package, `t2-utils`, not files copied from the profile
+overlay.  Step 7 builds it from `rootfs/packages/t2-utils/` with `dpkg-deb`
+(no debhelper: the build image has dpkg but no dpkg-dev), drops the `.deb` into
+a flat apt repository inside the image at `/opt/t2/repo`, writes
+`/etc/apt/sources.list.d/t2.list` (`deb [trusted=yes] file:/opt/t2/repo ./`)
+and installs it *from that repo* in the chroot.  The `/etc` files are
+conffiles, and the `postinst` re-enables the units idempotently without ever
+failing the dpkg run.
+
+A running board can therefore reinstall or upgrade the package offline:
+
+```sh
+apt-get update && apt-cache policy t2-utils
+apt-get install --reinstall -y t2-utils      # or: apt-get upgrade
+```
+
+A newer build applies without reflashing: copy its `.deb` to the board and
+`apt-get install -y /path/t2-utils_<version>_all.deb` (apt resolves the
+`Depends` against what is already installed).  `rootfs/README.md` has the
+details.
 
 ## Firmware
 

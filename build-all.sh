@@ -18,9 +18,10 @@
 # a rerun whose inputs hash the same prints "[skip] ..." and rebuilds nothing.
 # Step 2's inputs are rootfs/initramfs/ (its output is embedded in the kernel
 # Image, so it must not be left stale); step 7's are the profile tree, the
-# firmware trees, the kernel artefacts (build/out/Image, rk3568-t2.dtb,
-# modules/) and the scripts it invokes; step 8's are the five artefacts, the
-# boot-tree tools and the config template.
+# userspace package source (rootfs/packages/), the firmware trees, the kernel
+# artefacts (build/out/Image, rk3568-t2.dtb, modules/) and the scripts it
+# invokes; step 8's are the five artefacts, the boot-tree tools and the config
+# template.
 #
 # Steps can be selected: --only, --skip, --from, --to, --list.  For example,
 # `--only 6,8` rebuilds U-Boot and the installer image only.
@@ -307,7 +308,8 @@ if wanted 7; then
     echo "== 7/8 rootfs =="
     s7=$(step_hash "rootfs" \
         rootfs/build.sh rootfs/fetch.sh rootfs/initramfs/build.sh rootfs/t2-distro.py \
-        rootfs/profiles/t2-base rootfs/firmware rootfs/initramfs/firmware \
+        rootfs/profiles/t2-base rootfs/packages rootfs/firmware \
+        rootfs/initramfs/firmware \
         lib/t2-build.py lib/rkimg.py images/rk-fit.py \
         build/out/Image build/out/rk3568-t2.dtb build/out/modules)
     if stamp_skip 7 rootfs step7-rootfs.sha256 "$s7" \
