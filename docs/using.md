@@ -1,12 +1,23 @@
 # Using the device
 
-This page installs the image, provisions the board on first boot, and backs up
-the eMMC.  Build the images first: see `docs/building.md`.
+Install the image, provision the board, and back up the eMMC. Build first: see
+`docs/building.md`.
+
+## What the lights mean
+
+Normal operation:
+
+| Light | Meaning |
+|---|---|
+| power, green | steady on: the system is running |
+| power, red | fault. This image leaves it off |
+| drive bay green (each M.2 bay) | steady: a drive is present. Blinking: the drive is active. Off: the bay is empty |
+| drive bay red (each M.2 bay) | steady: the drive is faulty, or its md array is degraded |
 
 ## Install from the SD installer image
 
-Write the installer image to an SD card.  Identify the card carefully; `dd`
-overwrites the whole device.
+Write the installer image to an SD card. `dd` overwrites the whole device, so
+identify the card.
 
 ```sh
 lsblk -o NAME,SIZE,MODEL     # find the card, e.g. /dev/sdb
@@ -16,63 +27,55 @@ sync
 
 Then:
 
-1. Insert the card into the SD slot.
-2. Power the board up.  A plug-in power-on is deliberately *not* an autoboot:
-   U-Boot reads the PMIC's power-on source, sees external power rather than the
-   power button, and shuts the board back off (nothing lights up; the console
-   prints `T2 power-on: pmic=0x40+0x0 reset-cause=0x0` and then
-   `T2 powered on by plug-in - powering off`).  Wait until it is off again -
-   about a second - then **press and hold the power button**.  The board only
-   autoboots on a button press, and U-Boot lights the red power LED as soon as
-   it runs, about a second after the press.
-3. Keep holding.  After its 1 s autoboot countdown U-Boot samples the power
-   button twice, 0.4 s apart; held at both samples it selects the card's
-   installer tree (`T2: installer: booting the SD card` on the console) and
-   leaves the red LED lit.  A tap, or no press at all, boots the eMMC instead
-   (U-Boot switches the LED to green).  U-Boot never blinks - every LED state
-   above is steady.  Holding on past this point is harmless: a press that began
-   before the power-button daemon opened its input device is never counted, so
-   a hold that started at power-on cannot power the board off again.
-4. The kernel's LED driver briefly lights green (its device-tree default) until
-   the installer takes the LEDs over; red on from there means "installer
-   running".
-5. The installer card's `T2-CONFIG` partition carries `flash.presses=` and
-   `flash.window=`.  The shipped example uses **10 presses within 60 s**.  Press
-   the power button that many times inside the window.
+1. Insert the card.
+2. Plug in the power supply. A plug-in power-on is not an autoboot: U-Boot
+   shuts the board back off and nothing lights up. The console prints
+   `T2 power-on: pmic=0x40+0x0 reset-cause=0x0` and
+   `T2 powered on by plug-in - powering off`; wait a second for it to go off.
+3. Press and hold the power button. The board autoboots only on a button press.
+   About a second later red comes on steady: U-Boot has read the PMIC power-on
+   source. U-Boot never blinks; every LED state is steady.
+4. Keep holding through the 1 s countdown. U-Boot then selects the card's
+   installer tree (`T2: installer: booting the SD card`) and leaves red lit. A
+   tap, or no press, boots the eMMC and switches the LED to green. Holding on
+   is harmless.
+5. The kernel briefly lights green; the installer then takes over. Red means
+   "installer running".
+6. Press the card's `flash.presses=` count within `flash.window=`. The shipped
+   example uses **10 presses within 60 s**.
 
-The installer asks for the presses **before** it verifies the payload, and
-verifies it *while* you press - the sha256/zstd pass runs in the background as
-soon as the window opens, so nothing is waited out afterwards.  The red power
-LED is lit from the moment the installer starts - a working board never looks
-dead - and it shows the count: 1.0 s on / 1.0 s off before the first press, then
-0.1 s shorter after every counted press (press 1 -> 0.9 s, press 9 -> 0.1 s).  At
-the target count the red LED goes solid for 5 s and stays solid while the
-payload verification is joined.  Every sector written after that alternates red
-and green at about 2 Hz - **do not cut power while it alternates** - and green
-is steady once the last sync has returned.
+If a board lights green before that red and shows a 2-second autoboot countdown,
+it uses an old saved U-Boot environment. Reflash the board, or run
+`env default -a; saveenv` at the U-Boot console. The installer keeps the
+environment it finds as `/uboot.env.stock` on the boot partition, and writes its
+own as `/uboot.env`.
 
-If the run stops without finishing - the card was not armed, the count was
-missed, the payload was refused, or a write failed - the installer drops to its
-recovery shell and the power LED blinks **two short red flashes, then a pause**,
-repeating, so a failed board is never left dark.  A deliberate stop (a dry run)
-ends the same way.
+The red LED shows the count. Before the first press it flashes 1.0 s on, 1.0 s
+off. After each counted press the on time is 0.1 s shorter (press 1 -> 0.9 s,
+press 9 -> 0.1 s). At the target count it goes solid for 5 s, then stays solid
+while the payload is verified.
 
-The installer repartitions the eMMC, formats the boot partition, writes the
-rootfs, and writes the loader.  **Do not remove power while the LED alternates
-red and green.**  If you miss the window, or press the wrong number of times,
-the installer writes nothing and drops to its recovery shell on the serial
-console, telnet, and the USB gadget.
+Every sector written alternates red and green at about 2 Hz. **Do not cut
+power while it alternates.** Green is steady once the last sync returns.
 
-> A one-partition card variant uses `install.presses=` and `install.window=` and
-> writes a single partition instead.  The image tools no longer build that card,
-> but the installer still supports the keys.
+If a run does not finish, the red LED blinks **two short flashes, then a
+pause**, repeating. It then opens its recovery shell on the serial console,
+telnet, and the USB gadget. This happens when the card was not armed,
+the count was missed, the payload was refused, or a write failed. A dry run ends
+the same way.
+
+The installer repartitions the eMMC, formats the boot partition, and writes the
+rootfs and loader. If you miss the window or press the wrong number of times, it
+writes nothing.
+
+> A one-partition card variant uses `install.presses=` and `install.window=`;
+> the installer still supports the keys.
 
 ## First boot and provisioning
 
-On first boot the system provisions itself from a small FAT partition labelled
-**`T2-CONFIG`** (uppercase) that holds `/t2-config.txt`.  `t2-provision.service`
-mounts it read-only, applies the keys, and stamps the file's sha256, so an
-unchanged file is a no-op on later boots while an edited file re-applies.
+On first boot the system provisions itself from a FAT partition labelled
+**`T2-CONFIG`** (uppercase), which holds `/t2-config.txt`;
+`t2-provision.service` applies the keys when the file changes.
 
 | Key | Effect |
 |---|---|
@@ -82,32 +85,25 @@ unchanged file is a no-op on later boots while an edited file re-applies.
 | `ssh.authorized_key=` | appended to `/root/.ssh/authorized_keys`; repeatable |
 | `ble.psk=` | sets the Bluetooth LE pre-shared key |
 
-Unknown keys are logged and ignored.  `install.*` and `flash.*` keys are not
-handled on a normal boot; only the installer reads them.
+Unknown keys are ignored; `install.*` and `flash.*` are only read by the
+installer.
 
-Default access:
+Log in as **`root`** with password **`t2`**, then run `passwd`. The serial
+console is `ttyS2` at 1500000 8N1; HDMI is `tty1`. SSH uses the same password
+and ships no public key.
 
-* Log in as **`root`** with password **`t2`**, then change it with `passwd`.
-* The serial console is `ttyS2` at 1500000 8N1.  The HDMI console is `tty1`.
-* SSH accepts the same password; no public key is baked into the image.
-
-**USB-C gadget link.**  `t2-usbgadget.service` presents one CDC-NCM network
-function on the Type-C OTG port.  The board is `10.55.55.2/24` and serves DHCP
-to the laptop.  When the `T2-CONFIG` partition exists and is not mounted, the
-service also exports it as a removable read-write FAT drive, so the laptop can
-edit `t2-config.txt`.  On the host, run:
+**USB-C gadget link.** `t2-usbgadget.service` gives a USB network link at
+`10.55.55.2/24` with DHCP, and exports `T2-CONFIG` for editing `t2-config.txt`.
+On the host:
 
 ```sh
-tools/t2-gadget-link.py          # activate a NetworkManager profile, print the address
+tools/t2-gadget-link.py          # print the board's address
 ssh root@10.55.55.2              # or ssh root@t2.local (avahi)
 ```
 
-**Bluetooth LE.**  `t2-ble.service` runs a GATT management channel with no
-cable.  The advertisement carries the hostname.  Pair first (LESC "Just Works"),
-then the protocol authenticates each message with an HMAC over a pre-shared key.
-The key comes from `ble.psk=` in the config file; otherwise the service
-generates one on first start and logs it.  `t2-ble-password` prints the key in
-force (root only).  From a host:
+**Bluetooth LE.** `t2-ble.service` gives cable-free management; pair first, then
+messages use the key from `ble.psk=` (or one generated and logged on first
+start). `t2-ble-password` prints it (root only). From a host:
 
 ```sh
 bluetoothctl scan le
@@ -115,28 +111,20 @@ bluetoothctl connect <board-address>
 bluetoothctl pair    <board-address>
 ```
 
-The reference client is `t2-ble.html`, a single-file Web Bluetooth page.  It
-needs a secure context (HTTPS or `localhost`) and desktop Chrome or Edge.
+The reference client, `t2-ble.html`, is a single-file Web Bluetooth page needing
+HTTPS or `localhost` and Chrome or Edge.
 
 ## Powering off
 
-On a running system the power button is a *hold*: a short press does nothing,
-and the moment a hold reaches 3 s (`press_seconds` in
-`/etc/t2/powerkey.conf`) the system asks systemd for a graceful poweroff - no
-release needed.  The red power LED lights while you hold the button and blinks
-once the shutdown is running, so the board never looks dead.  Holding much
-longer is cut by the RK809 PMIC itself: that is a raw rail cut with no flush and
-no clean unmount, which is why the software threshold fires first.
+The power button is a hold: a short press does nothing, and a hold of 3 s
+(`press_seconds` in `/etc/t2/powerkey.conf`) shuts down gracefully. The red
+power LED lights while you hold, and blinks while the shutdown runs.
 
 ## Back up the eMMC
 
-Two routes.  Route (a) runs on the vendor OS; route (b) needs no OS at all.
+Two routes: (a) on the vendor OS, (b) with no OS.
 
 ### (a) From the vendor ZOS, over SSH
-
-The vendor OS runs a Debian-based ZOS.  Log in as root over the serial console
-(the vendor OS auto-logs in root on `ttyFIQ0`), or over SSH if root SSH is
-enabled.
 
 ```sh
 ssh root@<nas> 'cat /proc/partitions'
@@ -147,36 +135,32 @@ sha256sum p3-boot.img
 ```
 
 Keep at least the bootchain partitions: `p1` (`uboot`), `p2` (`misc`), `p3`
-(`boot`), `p6` (`rootfs`), `p10` (recovery kernel), and `p11` (recovery rootfs).
-`p8` is user data.  A whole-device dump is slower but simplest:
+(`boot`), `p6` (`rootfs`), `p10` (recovery kernel), `p11` (recovery rootfs);
+`p8` is user data. A whole-device dump is simpler:
 
 ```sh
 ssh root@<nas> 'dd if=/dev/mmcblk0 bs=4M | gzip -1' > emmc.img.gz
 ```
 
-Do not read or write `/dev/mmcblk0rpmb`; it is authenticated and cannot be
-restored.  Check `/dev/mmcblk0boot0` and `mmcblk0boot1` too, in case the loader
-lives in an eMMC boot partition.  The repository's `tools/zspace-fetch.sh`
-automates this and verifies each partition with a device-side hash.
+Do not touch `/dev/mmcblk0rpmb`; it cannot be restored. Check
+`/dev/mmcblk0boot0` and `mmcblk0boot1` too, in case the loader lives there.
+`tools/zspace-fetch.sh` automates this.
 
-Remember: the vendor USB recovery stick writes only `p3/p6/p8/p10/p11` and
-**never** the loader.  A bad loader write needs the maskrom route.
+The vendor USB recovery stick writes only `p3`, `p6`, `p8`, `p10`, and `p11`,
+never the loader. A bad loader write needs maskrom.
 
 ### (b) Interrupt U-Boot, then use `rkdeveloptool`
 
-This path needs only the serial console.
-
 1. Reset the board: send a serial BREAK, then `b` (SysRq-b); or power-cycle it.
-2. Send CTRL+C during U-Boot's autoboot countdown to reach the `=>` prompt -
-   the window is one second (`CONFIG_BOOTDELAY=1`; the board ships that value
-   because the countdown is dead time on every boot).
+2. Send CTRL+C during the autoboot countdown to reach the `=>` prompt. The
+   window is one second.
 3. Put the eMMC behind `rkdeveloptool`:
 
 ```sh
 rockusb 0 mmc 0          # at the U-Boot prompt
 ```
 
-Then, on the host:
+Then on the host:
 
 ```sh
 rkdeveloptool ld                     # expect: Loader
@@ -186,27 +170,13 @@ rkdeveloptool rl 0x8000 0x20000 boot.img   # read 64 MiB, sector-addressed
 rkdeveloptool rd                     # reset the board
 ```
 
-Known quirk: `rl` returns `0xcc` for any LBA at or above `0x10000` (32 MiB),
-through both maskrom and U-Boot rockusb.  This is a read-path quirk, not a
-device limit.  Writes are unaffected.  Write in chunks of at most 8 MiB at
-explicit LBAs, and read-verify only below 32 MiB; treat the boot as the proof
-for the rest.  `tools/t2-flash.py` drives this workflow, including the reset and
-the CTRL+C catch.
+Known quirk: `rl` fails for any LBA at or above `0x10000` (32 MiB). Write in
+chunks of at most 8 MiB at explicit LBAs, and read-verify only below 32 MiB.
+`tools/t2-flash.py` drives this workflow.
 
 ## When the root filesystem does not come up
 
-If `root=LABEL=zspace-rootfs` cannot be resolved or mounted, the initramfs stays
-in its bring-up shell and prints a short report: the root spec, what it resolved
-to, the reason, and every block device's filesystem signature - so a missing or
-half-written `zspace-rootfs` label is obvious at a glance.  Add `t2.debug=1` to
-the kernel cmdline (or `T2_INIT_DEBUG=1` to the environment) for the full
-bring-up dump: uname, cmdline, mmc hosts, `/proc/partitions`, PCIe devices and
-the dmesg tail.
-
-## What is not covered
-
-The vendor's proprietary applications (`zfilev2`, `zalbumv2`, `znvr`, and
-others), and the NPU and ISP userspace, are not part of this build.  The GPU
-uses ARM's `kbase` driver in the vendor stack; a mainline kernel would need a
-different userspace.  See the "What works" table in the repository root
-`README.md` for the supported features.
+If `root=LABEL=zspace-rootfs` cannot be resolved or mounted, the initramfs drops
+to its bring-up shell. It reports the root spec, what it resolved to, the
+reason, and each device's signature. Add `t2.debug=1` to the kernel
+cmdline, or `T2_INIT_DEBUG=1` to the environment, for the full dump.
