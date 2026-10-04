@@ -618,8 +618,11 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
     checks.append((f"entry points at /{dtb.name}",
                    fdt_line == f"\tfdt /{dtb.name}",
                    f"conf says {fdt_line.strip()!r}"))
-    present = {KERNEL_NAME, dtb.name, FALLBACK_KERNEL_NAME,
-               INSTALLER_RAMDISK_NAME, SYSTEM_RAMDISK_NAME}
+    present = {KERNEL_NAME, dtb.name, SYSTEM_RAMDISK_NAME}
+    if fallback is not None:
+        present.add(FALLBACK_KERNEL_NAME)
+    if installer_ramdisk is not None:
+        present.add(INSTALLER_RAMDISK_NAME)
     checks.extend(ramdisk_entry_checks(conf, present))
     if fallback is not None:
         text = conf.decode()
