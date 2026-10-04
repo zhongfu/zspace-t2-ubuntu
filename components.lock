@@ -23,7 +23,7 @@
         "linux-modules-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "a2deaf23d8397b05bc3840124e8a647651b5de3dcef6714c8012ad544086c4e5",
         "rk3568-t2.dtb": "a6e031b39baa6d84555da7c436179dccf4d0dcd8d01dbbacb92310c53e90b9fc"
       },
-      "commit": "b005d448722f86de346b67d19cb158ba665d6bd8",
+      "commit": "6e14d77cdc702c85e06f6eaffd176593b985b32c",
       "repo": "zspace-t2-kernel",
       "tag": "v7.3-rc5-1-t2"
     },
@@ -36,5 +36,5 @@
       "tag": "v0.1.0"
     }
   },
-  "org": "zspace"
+  "org": "zhongfu"
 }

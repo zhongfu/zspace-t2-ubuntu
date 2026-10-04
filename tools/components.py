@@ -44,7 +44,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_LOCK = HERE.parent / "components.lock"
 DEFAULT_DEST = HERE.parent / "build" / "components"
-DEFAULT_ORG = "zspace"
+# The org that owns the component repositories, used only when neither --org,
+# T2_COMPONENTS_ORG nor the lock's own "org" says otherwise.
+DEFAULT_ORG = "zhongfu"
 
 # What each component publishes.  The patterns are the producers' contract
 # (see the component repositories' release workflows); they are globs, never
@@ -112,7 +114,7 @@ def cmd_list(args) -> int:
     return 0
 
 
-def source_for(args, spec: dict, comp: str, name: str) -> str:
+def source_for(args, spec: dict, comp: str, name: str, lock_org: str = "") -> str:
     """Where an artefact comes from: local directory first, then the release.
 
     A local directory is searched as <dir>/<component>/<name> and then
@@ -125,7 +127,11 @@ def source_for(args, spec: dict, comp: str, name: str) -> str:
             if candidate.is_file():
                 return str(candidate)
         return str(base / comp / name)
-    org = args.org or os.environ.get("T2_COMPONENTS_ORG") or DEFAULT_ORG
+    # An explicit --org or T2_COMPONENTS_ORG wins; otherwise the lock's own
+    # "org" - the org the pinned artefacts were published under - decides.  The
+    # default is only a last resort, so a lock that says where its artefacts
+    # live is enough on its own.
+    org = args.org or os.environ.get("T2_COMPONENTS_ORG") or lock_org or DEFAULT_ORG
     base = args.url_base or os.environ.get("T2_COMPONENTS_URL_BASE") \
         or f"https://github.com/{org}"
     repo = spec.get("repo") or die(f"lock entry for {name} has no repo")
@@ -171,7 +177,7 @@ def cmd_fetch(args) -> int:
                 f"(want sha256 {want})")
         if dest.is_file():
             print(f"  [stale]  {comp}/{name} (sha256 differs, refetching)")
-        src = source_for(args, spec, comp, name)
+        src = source_for(args, spec, comp, name, lock.get("org", ""))
         print(f"  [fetch]  {comp}/{name} <- {src}")
         obtain(src, dest)
         got = sha256_file(dest)
