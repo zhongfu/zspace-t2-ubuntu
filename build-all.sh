@@ -203,11 +203,14 @@ stamp_write() { # <stamp name> <hash>
 }
 
 # stage <component> <file>... - copy a fetched component artefact into
-# build/out/, where the rootfs and installer steps read it.
+# build/out/, where the rootfs and installer steps read it.  build/out/ is
+# gitignored, so a fresh checkout - CI included - has no such directory; the
+# first write has to create it.
 stage() {
     local comp=$1
     shift
     local f
+    mkdir -p build/out
     for f in "$@"; do
         install -m 644 "build/components/$comp/$f" "build/out/$f"
     done
