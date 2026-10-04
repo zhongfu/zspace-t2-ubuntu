@@ -127,9 +127,21 @@ fi
 
 # ------------------------------------------------------------ 4. rootfs image
 # The kernel and the boot chain come from the component repositories, staged
-# into build/out/ by build-all.sh step 1; this step builds no kernel.
-[ -f "$out/Image" ] || { [ "$dry" = 1 ] || die \
-    "no $out/Image; run build-all.sh step 1 (it fetches and stages the components)"; }
+# into build/out/ by build-all.sh step 1; this step builds no kernel.  A --from N
+# run with N > 1 skips that step, so a stale build/out would feed the FIT below
+# (and images/) a kernel the lock does not pin: compare the bytes instead of
+# trusting the timestamps.
+for f in Image rk3568-t2.dtb; do
+    [ -f "$out/$f" ] || { [ "$dry" = 1 ] || die \
+        "no $out/$f; run build-all.sh step 1 (it fetches and stages the components)"; }
+    if [ "$dry" != 1 ]; then
+        got=$(sha256sum "$out/$f" | cut -d' ' -f1)
+        want=$(sha256sum "$repo/build/components/kernel/$f" | cut -d' ' -f1)
+        [ "$got" = "$want" ] || die \
+"$out/$f differs from build/components/kernel/$f: a previous run staged a
+     different artefact there.  Re-run build-all.sh from step 1 (without --from)."
+    fi
+done
 
 # The FIT is built later by images/ (build/out/t2-mainline-boot.img).  Only
 # check it when it is there; a rootfs-only build must not fail on it.

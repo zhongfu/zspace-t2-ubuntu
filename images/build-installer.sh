@@ -68,9 +68,22 @@ done
 die() { echo "build-installer: $*" >&2; exit 1; }
 log() { echo "build-installer: $*" >&2; }
 
-for f in Image rk3568-t2.dtb u-boot.itb idbloader.img rootfs.ext4.zst; do
-	[ -f "$OUT/$f" ] || die "missing $OUT/$f (run build-all.sh: step 1 stages the components, step 4 builds the rootfs)"
-done
+# Step 1 stages these as copies of the fetched component artefacts.  A --from N
+# run with N > 1 skips that step, so a stale build/out would quietly end up in
+# the FIT below: compare the bytes rather than trust the timestamps.
+staged() { # <file> <component>
+	[ -f "$OUT/$1" ] || die "missing $OUT/$1 (run build-all.sh: step 1 stages the components, step 4 builds the rootfs)"
+	got=$(sha256sum "$OUT/$1" | cut -d' ' -f1)
+	want=$(sha256sum "$BUILD/components/$2/$1" | cut -d' ' -f1)
+	[ "$got" = "$want" ] || die \
+"$OUT/$1 differs from $BUILD/components/$2/$1: a previous run staged a
+     different artefact.  Re-run build-all.sh from step 1 (without --from)."
+}
+staged Image kernel
+staged rk3568-t2.dtb kernel
+staged u-boot.itb bootloader
+staged idbloader.img bootloader
+[ -f "$OUT/rootfs.ext4.zst" ] || die "missing $OUT/rootfs.ext4.zst (run build-all.sh: step 1 stages the components, step 4 builds the rootfs)"
 [ -f "$BUILD/initramfs.gz" ] || die "missing $BUILD/initramfs.gz (run rootfs/initramfs/build.sh)"
 # The FIT assembler ships in the t2-utils package, so the image build and the
 # board assemble a FIT with one implementation.  build-all.sh step 1 unpacks it
