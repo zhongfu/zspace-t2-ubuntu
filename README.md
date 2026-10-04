@@ -67,12 +67,21 @@ ramdisk subimage (kernel + device tree + ramdisk); both are assembled by
 `t2-mkfit` from the `t2-utils` package: the card's `/Image` carries the
 installer ramdisk, while the eMMC's `/Image` is built from `/Image.emmc` and
 carries the initramfs-tools image (`/boot/initrd.img-<rel>`). A FIT
-configuration selects one ramdisk, and bootstd only boots the default one, so
-the two roles need two files. Because the installer ramdisk stays separate, a
-change to the installer or the rootfs does not force a kernel rebuild. This
-repository also builds the `t2-initramfs` package (the installer ramdisk,
-`/boot/initramfs-t2.gz`), which the kernel postinst falls back to when a rootfs
-has no initramfs-tools.
+configuration selects one ramdisk, so the two roles need two files, and that
+subimage is what the vendor-layout boot partition mirror boots.
+
+The bootstd entries do **not** boot it. An entry that names an `fdt` makes
+U-Boot hand bootm the literal `-` as its ramdisk argument, and bootm reads that
+as "no ramdisk" - the FIT's own subimage is skipped - so a kernel with no
+embedded initramfs and no `root=` panics in `mount_root` before `/init`. Every
+entry therefore names its ramdisk as a **file** in the boot tree:
+`/initramfs-t2.gz` (the installer ramdisk, named by the `t2-installer` flash
+entry) and `/initrd.img` (the distribution's, named by the `t2-emmc` entries) -
+the same names the installed rootfs carries under `/boot`. Because the installer
+ramdisk stays separate, a change to the installer or the rootfs does not force a
+kernel rebuild. This repository also builds the `t2-initramfs` package (the
+installer ramdisk, `/boot/initramfs-t2.gz`), which the kernel postinst falls
+back to when a rootfs has no initramfs-tools.
 
 `docs/building.md` is the full reference. With Docker, `./docker-build.sh`
 builds everything. On a host, `./build-all.sh` runs the five steps, or a subset

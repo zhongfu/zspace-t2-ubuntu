@@ -1110,6 +1110,13 @@ flash_run() {
 	# ramdisk, so an installed board boots its root the way the distribution
 	# does.  The eMMC gets the second one; a card built before it existed falls
 	# back to the first, which still boots (its init resolves the root too).
+	#
+	# The ramdisk the eMMC's entries actually boot is the *file* /initrd.img,
+	# not the one inside that FIT: an extlinux entry that names an `fdt` makes
+	# U-Boot drop a FIT's own ramdisk (it passes "-" to bootm), so every entry
+	# names its ramdisk as a file.  This is the distribution's image, the same
+	# one the installed rootfs has as /boot/initrd.img-<rel>; the eMMC
+	# descriptor names it, so a tree without it does not boot.
 	image_src="$TREE/Image.emmc"
 	[ -f "$image_src" ] || image_src="$TREE/Image"
 	cp "$image_src" "$BMNT/Image" \
@@ -1121,6 +1128,20 @@ flash_run() {
 		log "${DISK}p3/Image does not match $image_src after the copy; refusing"
 		drop_to_shell
 	fi
+	if [ ! -f "$TREE/initrd.img" ]; then
+		log "$TREE/initrd.img (the distribution ramdisk the eMMC entries " \
+			"name) is missing; refusing"
+		drop_to_shell
+	fi
+	cp "$TREE/initrd.img" "$BMNT/initrd.img" \
+		|| { log "copying /initrd.img to ${DISK}p3 failed"; drop_to_shell; }
+	got=$(sha256sum "$BMNT/initrd.img" | cut -d' ' -f1)
+	want=$(sha256sum "$TREE/initrd.img" | cut -d' ' -f1)
+	if [ "$got" != "$want" ]; then
+		log "${DISK}p3/initrd.img does not match the tree's after the copy; refusing"
+		drop_to_shell
+	fi
+	log "boot tree /initrd.img is the distribution ramdisk ($(basename "$(ls "$TREE"/initrd.img)"))"
 	if [ -f "$TREE/Image.old" ]; then
 		cp "$TREE/Image.old" "$BMNT/Image.old" \
 			|| { log "copying Image.old to ${DISK}p3 failed"; drop_to_shell; }

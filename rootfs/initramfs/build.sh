@@ -204,9 +204,12 @@ chmod 644 "$out/lib/firmware/rtl_nic/"* "$out/lib/firmware/"*.db* \
 
 # ------------------------------------------------------------- FIT ramdisk
 # The kernel Image does not embed this tree.  The boot FIT carries it as its
-# ramdisk subimage (kernel + board DTB + this gzip'd cpio), and the
-# t2-initramfs package ships the same bytes, so an on-board kernel upgrade
-# assembles an identical FIT.  GNU cpio's -R pins root ownership (which
+# ramdisk subimage (kernel + board DTB + this gzip'd cpio), the *boot tree*
+# carries the same bytes as /initramfs-t2.gz - the file the `t2-installer`
+# entry actually names, because an entry with an `fdt` makes U-Boot drop the
+# FIT's own ramdisk (see images/t2-boot-fat.py) - and the t2-initramfs package
+# ships them as /boot/initramfs-t2.gz, so an on-board kernel upgrade can
+# assemble an identical FIT and file.  GNU cpio's -R pins root ownership (which
 # otherwise needs fakeroot) and the sorted find keeps the archive stable.
 echo "== packing the FIT ramdisk =="
 (cd "$out" && find . -print0 | LC_ALL=C sort -z \

@@ -22,13 +22,20 @@ is the file the installer copies over the eMMC's `/extlinux/extlinux.conf` -
 so the installed disk boots the primary entry and the installer never edits a
 conf.  Both are built from the same `conf_text()` inputs the FAT image uses.
 
-Inputs are the real ones - the kernel `Image` and a board DTB - plus the kernel
-cmdline; the conf is generated here, not copied, so the entry can never drift
-from the files that sit next to it.
+Inputs are the real ones - the kernel `Image`, a board DTB, the two ramdisks
+and the kernel cmdline; the conf is generated here, not copied, so the entry can
+never drift from the files that sit next to it.  Every entry names its ramdisk
+**as a file** (`initrd`): a FIT's own ramdisk is not booted by U-Boot's
+extlinux/bootstd path whenever the entry also names an `fdt` (label_boot passes
+"-" to bootm, which boot_get_ramdisk reads as "no ramdisk"), and a kernel with
+no embedded initramfs and no `root=` then panics before `/init`.  See
+INSTALLER_RAMDISK_NAME for the full chain.
 
 Contents (exactly these, nothing else):
     /Image
     /<dtb basename>
+    /initramfs-t2.gz           (only with --flash-append; the installer ramdisk)
+    /initrd.img                (the distribution's initramfs-tools image)
     /extlinux/extlinux.conf
     /extlinux/t2-emmc.conf     (only with --out-dir)
     /Image.old                 (only with --fallback-image)
@@ -161,8 +168,31 @@ KERNEL_NAME = "Image"
 # installer copies it to the eMMC's boot tree in place of /Image: same kernel and
 # DTB, but the distro's initramfs-tools ramdisk instead of the installer one.
 # Two files rather than two FIT configurations, because a FIT configuration
-# selects one ramdisk and extlinux/bootstd only ever use the default one.
+# selects one ramdisk.  Do not expect the entries to boot *that* ramdisk: they
+# name the ramdisk as a file (see below), because a label with an `fdt` makes
+# U-Boot drop the FIT's one.  The FIT ramdisk is what the vendor-layout boot
+# partition mirror boots, which is why it stays.
 EMMC_KERNEL_NAME = "Image.emmc"
+# The ramdisks the entries name, as *files*.  U-Boot's extlinux/bootstd path
+# never reads a FIT's own ramdisk: whenever a label supplies an `fdt`,
+# pxe_utils' label_boot() hands bootm the literal "-" as the ramdisk argument
+# (boot/pxe_utils.c, the `if (bootm_argv[3]) { if (!bootm_argv[2])
+# bootm_argv[2] = "-"; }` block), and boot_get_ramdisk() reads "-" as "no
+# ramdisk" (boot/image-board.c), so the FIT configuration's `ramdisk` subimage
+# is skipped.  A kernel with no embedded initramfs and no root= then panics
+# ("VFS: Unable to mount root fs on unknown-block(0,0)") before /init ever
+# runs.  So each entry names its ramdisk as a file: the pxe loader reads it into
+# ramdisk_addr_r and passes it to bootm as "<addr>:<size>", which
+# CONFIG_SUPPORT_RAW_INITRD accepts, and the kernel decompresses the gzip'd
+# cpio itself.
+#
+# The file is the one the rootfs already carries under /boot - the names match
+# on purpose, so a boot tree is a copy of what the installed system has:
+INSTALLER_RAMDISK_NAME = "initramfs-t2.gz"    # t2-initramfs' /boot/initramfs-t2.gz
+SYSTEM_RAMDISK_NAME = "initrd.img"            # /boot/initrd.img-<rel>, unversioned
+# The FIT still carries its own ramdisk as well (the vendor-layout boot
+# partition mirror boots that), so those bytes exist twice in a tree; the
+# entry-named file above is what U-Boot actually loads.
 # The persistent U-Boot environment, written with the A/B kernel so a freshly
 # installed kernel is *armed* before its first boot.  U-Boot's `env_t` is a
 # 4-byte CRC32 of the data (native word order: little-endian on this ARM
@@ -214,7 +244,9 @@ def probe(*argv: object) -> subprocess.CompletedProcess:
 
 def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
                  env_defaults: Path | None = None,
-                 emmc_image: Path | None = None) -> None:
+                 emmc_image: Path | None = None,
+                 installer_ramdisk: Path | None = None,
+                 system_ramdisk: Path | None = None) -> None:
     pairs = [("--image", image), ("--dtb", dtb)]
     if fallback is not None:
         pairs.append(("--fallback-image", fallback))
@@ -222,6 +254,10 @@ def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
         pairs.append(("--env-defaults", env_defaults))
     if emmc_image is not None:
         pairs.append(("--emmc-image", emmc_image))
+    if installer_ramdisk is not None:
+        pairs.append(("--initramfs", installer_ramdisk))
+    if system_ramdisk is not None:
+        pairs.append(("--initrd", system_ramdisk))
     for what, p in pairs:
         if not p.exists():
             die(f"{what} {p}: no such file")
@@ -235,6 +271,10 @@ def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
         die(f"--fallback-image {fallback}: empty file")
     if env_defaults is not None and env_defaults.stat().st_size == 0:
         die(f"--env-defaults {env_defaults}: empty file")
+    if installer_ramdisk is not None and installer_ramdisk.stat().st_size == 0:
+        die(f"--initramfs {installer_ramdisk}: empty file")
+    if system_ramdisk is not None and system_ramdisk.stat().st_size == 0:
+        die(f"--initrd {system_ramdisk}: empty file")
 
 
 def validate(label: str, dtb_name: str, append: str,
@@ -254,10 +294,12 @@ def validate(label: str, dtb_name: str, append: str,
     if len(dtb_name.encode()) > 255:
         die(f"--dtb {dtb_name!r}: name longer than VFAT allows (255 bytes)")
     if dtb_name in (CONF_DIR, KERNEL_NAME, FALLBACK_KERNEL_NAME,
-                    EMMC_KERNEL_NAME):
+                    EMMC_KERNEL_NAME, INSTALLER_RAMDISK_NAME,
+                    SYSTEM_RAMDISK_NAME):
         die(f"--dtb basename {dtb_name!r} collides with /{CONF_DIR}, "
-            f"/{KERNEL_NAME}, /{FALLBACK_KERNEL_NAME} or "
-            f"/{EMMC_KERNEL_NAME} on the boot partition")
+            f"/{KERNEL_NAME}, /{FALLBACK_KERNEL_NAME}, /{EMMC_KERNEL_NAME}, "
+            f"/{INSTALLER_RAMDISK_NAME} or /{SYSTEM_RAMDISK_NAME} on the boot "
+            f"partition")
     if any(c in "\r\n" for c in append):
         die("--append: a newline would split the extlinux.conf entry")
     if flash_append is not None and any(c in "\r\n" for c in flash_append):
@@ -283,18 +325,25 @@ def conf_text(dtb_name: str, append: str, flash_append: str | None = None,
     parts = []
     if default is not None:
         parts.append(f"default {default}\n")
+    # Every entry names its ramdisk as a file: an `fdt` line makes U-Boot pass
+    # "-" as bootm's ramdisk argument and drop the FIT's own one (see
+    # INSTALLER_RAMDISK_NAME).  The flash entry boots the installer's ramdisk,
+    # the rootfs entries the distribution's.
     if flash_append is not None:
         parts.append(f"label {FLASH_LABEL}\n"
                      f"\tkernel /{KERNEL_NAME}\n"
+                     f"\tinitrd /{INSTALLER_RAMDISK_NAME}\n"
                      f"\tfdt /{dtb_name}\n"
                      f"\tappend {flash_append}\n")
     parts.append(f"label {CONF_LABEL}\n"
                  f"\tkernel /{KERNEL_NAME}\n"
+                 f"\tinitrd /{SYSTEM_RAMDISK_NAME}\n"
                  f"\tfdt /{dtb_name}\n"
                  f"\tappend {append}\n")
     if fallback:
         parts.append(f"label {FALLBACK_LABEL}\n"
                      f"\tkernel /{FALLBACK_KERNEL_NAME}\n"
+                     f"\tinitrd /{SYSTEM_RAMDISK_NAME}\n"
                      f"\tfdt /{dtb_name}\n"
                      f"\tappend {append}\n")
     return "".join(parts).encode()
@@ -385,7 +434,9 @@ def resolve_size(want: str, contents: int) -> int:
 
 def build(out: Path, label: str, size: int, image: Path, dtb: Path,
           conf: bytes, fallback: Path | None = None,
-          env: bytes | None = None, emmc_image: Path | None = None) -> None:
+          env: bytes | None = None, emmc_image: Path | None = None,
+          installer_ramdisk: Path | None = None,
+          system_ramdisk: Path | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
     subprocess.run(["truncate", "-s", str(size), str(out)], check=True)
@@ -397,6 +448,10 @@ def build(out: Path, label: str, size: int, image: Path, dtb: Path,
     run("mcopy", "-i", out, image, f"::/{KERNEL_NAME}")
     if emmc_image is not None:
         run("mcopy", "-i", out, emmc_image, f"::/{EMMC_KERNEL_NAME}")
+    if installer_ramdisk is not None:
+        run("mcopy", "-i", out, installer_ramdisk, f"::/{INSTALLER_RAMDISK_NAME}")
+    if system_ramdisk is not None:
+        run("mcopy", "-i", out, system_ramdisk, f"::/{SYSTEM_RAMDISK_NAME}")
     if fallback is not None:
         run("mcopy", "-i", out, fallback, f"::/{FALLBACK_KERNEL_NAME}")
     run("mcopy", "-i", out, dtb, f"::/{dtb.name}")
@@ -439,9 +494,37 @@ def env_checks(got: bytes, want: bytes) -> list:
     ]
 
 
+def ramdisk_entry_checks(conf: bytes, present: set) -> list:
+    """The `initrd` lines of one descriptor, against the files a reader sees.
+
+    The check the original arrangement was missing: with no `initrd` line, U-Boot
+    drops a FIT's own ramdisk whenever the entry also names an `fdt` (it passes
+    "-" to bootm), so the kernel was handed no initramfs at all and panicked
+    before /init.  Every entry must therefore name a ramdisk, and a reader must
+    have it.
+    """
+    text = conf.decode()
+    labels = [l.split(None, 1)[1] for l in text.splitlines()
+              if l.startswith("label ")]
+    named = [l.split(None, 1)[1] for l in text.splitlines()
+             if l.startswith("\tinitrd ")]
+    missing = sorted({n.lstrip("/") for n in named} - present)
+    return [
+        (f"all {len(labels)} entries name a ramdisk",
+         len(named) == len(labels),
+         f"{len(named)} initrd line(s) for {len(labels)} entries: "
+         f"{', '.join(sorted(set(named))) or 'none'}"),
+        ("every named ramdisk is in the tree", not missing,
+         f"missing: {', '.join(missing)}" if missing
+         else ", ".join(sorted({n.lstrip('/') for n in named}))),
+    ]
+
+
 def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
            fallback: Path | None = None, env: bytes | None = None,
-           emmc_image: Path | None = None) -> list:
+           emmc_image: Path | None = None,
+           installer_ramdisk: Path | None = None,
+           system_ramdisk: Path | None = None) -> list:
     """Read the finished image back with mtools; return (name, ok, detail)."""
     checks = []
     info = probe("minfo", "-i", out, "::")
@@ -455,8 +538,8 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
     checks.append((f"FAT32 volume labelled {label}",
                    fs_type.startswith("FAT32") and vol_label == label,
                    f"minfo says type={fs_type!r} label={vol_label!r}"))
-    # The root must hold exactly the three things bootstd needs - an extra
-    # directory entry is a hint something was copied in that should not be
+    # The root must hold exactly the things bootstd and the entries need - an
+    # extra directory entry is a hint something was copied in that should not be
     # there (and a missing one means bootstd would find nothing to boot).
     listing = probe("mdir", "-i", out, "-b", "::")
     entries = sorted(line.strip() for line in listing.stdout.splitlines()
@@ -464,12 +547,20 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
     want = sorted([f"::/{KERNEL_NAME}", f"::/{dtb.name}", f"::/{CONF_DIR}/"]
                   + ([f"::/{EMMC_KERNEL_NAME}"] if emmc_image is not None
                      else [])
+                  + ([f"::/{INSTALLER_RAMDISK_NAME}"]
+                     if installer_ramdisk is not None else [])
+                  + ([f"::/{SYSTEM_RAMDISK_NAME}"]
+                     if system_ramdisk is not None else [])
                   + ([f"::/{FALLBACK_KERNEL_NAME}"] if fallback is not None
                      else [])
                   + ([f"::/{ENV_NAME}"] if env is not None else []))
     names = ("root is exactly " + (f"/{ENV_NAME}, " if env is not None else "")
              + f"/{KERNEL_NAME}"
              + (f", /{EMMC_KERNEL_NAME}" if emmc_image is not None else "")
+             + (f", /{INSTALLER_RAMDISK_NAME}"
+                if installer_ramdisk is not None else "")
+             + (f", /{SYSTEM_RAMDISK_NAME}"
+                if system_ramdisk is not None else "")
              + (f", /{FALLBACK_KERNEL_NAME}" if fallback is not None else "")
              + ", /<dtb>, /extlinux")
     checks.append((names, entries == want,
@@ -491,6 +582,17 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
                            got_sha == want_sha,
                            f"{got_sha[:16]} vs {want_sha[:16]} "
                            f"({len(got):,} of {emmc_image.stat().st_size:,} B)"))
+        for name, src in ((INSTALLER_RAMDISK_NAME, installer_ramdisk),
+                          (SYSTEM_RAMDISK_NAME, system_ramdisk)):
+            if src is None:
+                continue
+            got = fat_bytes(out, name, tmpd / name)
+            want_sha = sha256_file(src)
+            got_sha = hashlib.sha256(got).hexdigest()
+            checks.append((f"/{name} sha256 == {src.name}",
+                           got_sha == want_sha,
+                           f"{got_sha[:16]} vs {want_sha[:16]} "
+                           f"({len(got):,} of {src.stat().st_size:,} B)"))
         if fallback is not None:
             got = fat_bytes(out, FALLBACK_KERNEL_NAME, tmpd / "Image.old")
             want_sha = sha256_file(fallback)
@@ -516,6 +618,9 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
     checks.append((f"entry points at /{dtb.name}",
                    fdt_line == f"\tfdt /{dtb.name}",
                    f"conf says {fdt_line.strip()!r}"))
+    present = {KERNEL_NAME, dtb.name, FALLBACK_KERNEL_NAME,
+               INSTALLER_RAMDISK_NAME, SYSTEM_RAMDISK_NAME}
+    checks.extend(ramdisk_entry_checks(conf, present))
     if fallback is not None:
         text = conf.decode()
         checks.append((f"conf has the {FALLBACK_LABEL} entry booting "
@@ -534,7 +639,9 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
 def write_out_dir(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
                   emmc_conf: bytes, fallback: Path | None = None,
                   env: bytes | None = None,
-                  emmc_image: Path | None = None) -> None:
+                  emmc_image: Path | None = None,
+                  installer_ramdisk: Path | None = None,
+                  system_ramdisk: Path | None = None) -> None:
     """Write the boot tree as *files* (the card's config FAT root).
 
     Same inputs as `build()` - one code path for the same validation and
@@ -546,6 +653,10 @@ def write_out_dir(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
     shutil.copyfile(image, out_dir / KERNEL_NAME)
     if emmc_image is not None:
         shutil.copyfile(emmc_image, out_dir / EMMC_KERNEL_NAME)
+    if installer_ramdisk is not None:
+        shutil.copyfile(installer_ramdisk, out_dir / INSTALLER_RAMDISK_NAME)
+    if system_ramdisk is not None:
+        shutil.copyfile(system_ramdisk, out_dir / SYSTEM_RAMDISK_NAME)
     shutil.copyfile(dtb, out_dir / dtb.name)
     if fallback is not None:
         shutil.copyfile(fallback, out_dir / FALLBACK_KERNEL_NAME)
@@ -566,12 +677,18 @@ def conf_default(text: str) -> str:
 def verify_tree(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
                 emmc_conf: bytes, flash: bool, fallback: Path | None = None,
                 env: bytes | None = None,
-                emmc_image: Path | None = None) -> list:
+                emmc_image: Path | None = None,
+                installer_ramdisk: Path | None = None,
+                system_ramdisk: Path | None = None) -> list:
     """Read the written tree back from the directory; return (name, ok, detail)."""
     checks = []
     expect = {KERNEL_NAME: image, dtb.name: dtb}
     if emmc_image is not None:
         expect[EMMC_KERNEL_NAME] = emmc_image
+    if installer_ramdisk is not None:
+        expect[INSTALLER_RAMDISK_NAME] = installer_ramdisk
+    if system_ramdisk is not None:
+        expect[SYSTEM_RAMDISK_NAME] = system_ramdisk
     if fallback is not None:
         expect[FALLBACK_KERNEL_NAME] = fallback
     missing = [rel for rel in expect if not (out_dir / rel).is_file()]
@@ -611,6 +728,14 @@ def verify_tree(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
     checks.append((f"eMMC descriptor selects {CONF_LABEL}",
                    conf_default(got_emmc.decode()) == CONF_LABEL,
                    f"default={conf_default(got_emmc.decode())!r}"))
+    # Each descriptor's entries must name a ramdisk this tree actually holds:
+    # the eMMC descriptor is what the installer lands on p3, and its files come
+    # from this same directory.
+    tree_files = {p.name for p in out_dir.iterdir() if p.is_file()}
+    checks.extend((f"card: {name}", ok, detail)
+                  for name, ok, detail in ramdisk_entry_checks(got_card, tree_files))
+    checks.extend((f"eMMC: {name}", ok, detail)
+                  for name, ok, detail in ramdisk_entry_checks(got_emmc, tree_files))
     return checks
 
 
@@ -624,6 +749,8 @@ def main() -> int:
     out_grp.add_argument("--out-dir", type=Path, default=None,
                     help="directory to write the boot tree as *files*: "
                          f"/{KERNEL_NAME}, /<dtb>, "
+                         f"/{INSTALLER_RAMDISK_NAME} with --initramfs, "
+                         f"/{SYSTEM_RAMDISK_NAME}, "
                          f"/{CONF_DIR}/{CONF_NAME} (card descriptor, default "
                          f"{FLASH_LABEL} with --flash-append) and "
                          f"/{CONF_DIR}/{EMMC_CONF_NAME} (eMMC descriptor, "
@@ -659,6 +786,19 @@ def main() -> int:
                          "--fallback-image it also gets upgrade_available=1 "
                          "and bootcount=0, arming the boot counter for the "
                          "kernel just written")
+    ap.add_argument("--initramfs", type=Path, default=None,
+                    help="the installer/flash ramdisk (build/initramfs.gz, the "
+                         f"payload of the t2-initramfs package): written to "
+                         f"/{INSTALLER_RAMDISK_NAME}, which the {FLASH_LABEL} "
+                         "entry names.  Required with --flash-append - U-Boot "
+                         "does not use a FIT's own ramdisk when the entry also "
+                         "names an fdt, so the entry has to name this file")
+    ap.add_argument("--initrd", type=Path, default=None,
+                    help="the installed system's ramdisk - the distro's "
+                         "initramfs-tools image (build/out/initrd.img-<rel>): "
+                         f"written to /{SYSTEM_RAMDISK_NAME}, which the "
+                         f"{CONF_LABEL} entries name.  Required: those entries "
+                         "always exist")
     ap.add_argument("--label", default=DEFAULT_LABEL,
                     help=f"FAT volume label (default {DEFAULT_LABEL})")
     ap.add_argument("--append", default=DEFAULT_APPEND,
@@ -689,6 +829,22 @@ def main() -> int:
 
     fallback = args.fallback_image
     emmc_image = args.emmc_image
+    installer_ramdisk = args.initramfs
+    system_ramdisk = args.initrd
+    # Every entry names a ramdisk, so a tree must carry the ones its entries
+    # name.  t2-emmc is always emitted (hence --initrd); t2-installer only with
+    # --flash-append (hence --initramfs), and an unnamed ramdisk would just be
+    # dead weight on the FAT.
+    if system_ramdisk is None:
+        die(f"--initrd is required: the {CONF_LABEL} entry names "
+            f"/{SYSTEM_RAMDISK_NAME} (the distribution's initramfs-tools "
+            f"image, build/out/initrd.img-<rel>)")
+    if args.flash_append is not None and installer_ramdisk is None:
+        die(f"--initramfs is required with --flash-append: the {FLASH_LABEL} "
+            f"entry names /{INSTALLER_RAMDISK_NAME} (build/initramfs.gz)")
+    if args.flash_append is None and installer_ramdisk is not None:
+        die(f"--initramfs without --flash-append: no entry names "
+            f"/{INSTALLER_RAMDISK_NAME}, so it would not be booted")
     # Ship the board's compiled default environment as /uboot.env whenever the
     # build has one.  U-Boot reads its environment from the eMMC's FAT boot
     # partition (CONFIG_ENV_FAT_DEVICE_AND_PART / CONFIG_ENV_FAT_FILE), so this
@@ -703,7 +859,8 @@ def main() -> int:
             die(f"--env-defaults {env_src}: no such file (a U-Boot build's "
                 f"`make u-boot-initial-env` output{why})")
         env_src = None
-    check_inputs(args.image, args.dtb, fallback, env_src, emmc_image)
+    check_inputs(args.image, args.dtb, fallback, env_src, emmc_image,
+                 installer_ramdisk, system_ramdisk)
     dtb_name = args.dtb.name
     validate(args.label, dtb_name, args.append, args.flash_append)
 
@@ -723,6 +880,10 @@ def main() -> int:
         files = [(f"/{KERNEL_NAME}", args.image.stat().st_size)]
         if emmc_image is not None:
             files.append((f"/{EMMC_KERNEL_NAME}", emmc_image.stat().st_size))
+        if installer_ramdisk is not None:
+            files.append((f"/{INSTALLER_RAMDISK_NAME}",
+                          installer_ramdisk.stat().st_size))
+        files.append((f"/{SYSTEM_RAMDISK_NAME}", system_ramdisk.stat().st_size))
         if fallback is not None:
             files.append((f"/{FALLBACK_KERNEL_NAME}",
                           fallback.stat().st_size))
@@ -736,11 +897,13 @@ def main() -> int:
         for name, n in files:
             log(f"  {name:28s} {human(n):>18}")
         write_out_dir(args.out_dir, args.image, args.dtb, card_conf,
-                      emmc_conf, fallback, env, emmc_image)
+                      emmc_conf, fallback, env, emmc_image,
+                      installer_ramdisk, system_ramdisk)
 
         log("-- verify (read back from the directory) --")
         checks = verify_tree(args.out_dir, args.image, args.dtb, card_conf,
-                             emmc_conf, flash, fallback, env, emmc_image)
+                             emmc_conf, flash, fallback, env, emmc_image,
+                             installer_ramdisk, system_ramdisk)
         bad = [c for c in checks if not c[1]]
         for name, ok, detail in checks:
             log(f"  [{'ok' if ok else 'FAIL'}] {name}  ({detail})")
@@ -761,6 +924,9 @@ def main() -> int:
     contents = args.image.stat().st_size + args.dtb.stat().st_size + len(conf)
     if emmc_image is not None:
         contents += emmc_image.stat().st_size
+    if installer_ramdisk is not None:
+        contents += installer_ramdisk.stat().st_size
+    contents += system_ramdisk.stat().st_size
     if fallback is not None:
         contents += fallback.stat().st_size
     if env is not None:
@@ -782,6 +948,10 @@ def main() -> int:
     files = [(f"/{KERNEL_NAME}", args.image.stat().st_size)]
     if emmc_image is not None:
         files.append((f"/{EMMC_KERNEL_NAME}", emmc_image.stat().st_size))
+    if installer_ramdisk is not None:
+        files.append((f"/{INSTALLER_RAMDISK_NAME}",
+                      installer_ramdisk.stat().st_size))
+    files.append((f"/{SYSTEM_RAMDISK_NAME}", system_ramdisk.stat().st_size))
     if fallback is not None:
         files.append((f"/{FALLBACK_KERNEL_NAME}", fallback.stat().st_size))
     if env is not None:
@@ -796,11 +966,12 @@ def main() -> int:
         die(f"the computed size {human(size)} is below the contents")
 
     build(args.out, args.label, size, args.image, args.dtb, conf,
-          fallback, env, emmc_image)
+          fallback, env, emmc_image, installer_ramdisk, system_ramdisk)
 
     log("-- verify (read back with mtools) --")
     checks = verify(args.out, args.label, args.image, args.dtb, conf,
-                    fallback, env, emmc_image)
+                    fallback, env, emmc_image, installer_ramdisk,
+                    system_ramdisk)
     bad = [c for c in checks if not c[1]]
     for name, ok, detail in checks:
         log(f"  [{'ok' if ok else 'FAIL'}] {name}  ({detail})")

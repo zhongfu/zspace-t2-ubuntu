@@ -89,7 +89,7 @@ release.
 |---|---|
 | `installer.img` | SD-card installer image.  Write it to a card and boot the board; it installs the system to the eMMC. |
 | `rootfs.ext4.zst` | Ubuntu root filesystem, zstd-compressed.  The installer writes it to the eMMC. |
-| `t2-initramfs_<version>_all.deb` | The installer initramfs: the card FIT's ramdisk, and the fallback `linux-image-<rel>-t2` uses for an on-board kernel upgrade when a rootfs has no initramfs-tools. |
+| `t2-initramfs_<version>_all.deb` | The installer initramfs: the card FIT's ramdisk, the boot tree's `/initramfs-t2.gz` (what the `t2-installer` entry boots), and the fallback `linux-image-<rel>-t2` uses for an on-board kernel upgrade when a rootfs has no initramfs-tools. |
 | `components.lock` | The component releases and artefact sha256s this image was built from. |
 | `SHA256SUMS` | SHA-256 checksums.  Check them with `sha256sum -c SHA256SUMS`. |
 

@@ -95,9 +95,13 @@ MKFIT="$BUILD/components/utils/unpacked/usr/bin/t2-mkfit"
 
 # 1. the mainline kernel FIT (the vendor `boot` partition mirror, and the file
 # the boot tree ships as /Image).  The kernel Image does not embed the
-# initramfs any more: it rides in the FIT as the ramdisk subimage, which is what
-# lets the installed board mount its root.  t2-mkfit stores it uncompressed
-# because this U-Boot does not decompress a FIT ramdisk.
+# initramfs any more.  The FIT carries it as a ramdisk subimage - that is what
+# the vendor-layout boot partition mirror boots - but the bootstd entries do
+# *not* boot that ramdisk: an entry with an `fdt` makes U-Boot hand bootm the
+# literal "-" as its ramdisk argument and drop the FIT's own one, so each entry
+# names the ramdisk as a *file* instead (/initramfs-t2.gz and /initrd.img, see
+# t2-boot-fat.py).  t2-mkfit stores the FIT's copy uncompressed because this
+# U-Boot does not decompress a FIT ramdisk; the files keep their build gzip.
 log "packing the kernel FIT with t2-mkfit (kernel + dtb + initramfs ramdisk)"
 "$PY" "$MKFIT" --kernel "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" \
 	--ramdisk "$BUILD/initramfs.gz" \
@@ -122,6 +126,7 @@ rm -rf "$TREE" "$PAYLOAD"
 log "building the boot tree (t2-boot-fat.py --out-dir)"
 boot_args=(--image "$OUT/t2-mainline-boot.img" --dtb "$OUT/rk3568-t2.dtb"
 	--emmc-image "$OUT/t2-emmc-boot.img"
+	--initramfs "$BUILD/initramfs.gz" --initrd "$emmc_initrd"
 	--out-dir "$TREE" --flash-append t2.mode=flash)
 # /uboot.env carries the board's own compiled default environment; U-Boot reads
 # its environment from the eMMC's FAT boot partition, so shipping it is what

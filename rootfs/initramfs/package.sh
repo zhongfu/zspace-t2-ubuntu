@@ -8,12 +8,15 @@
 # so the same tree builds the same .deb bytes.
 #
 # Why it exists: the kernel Image does not embed the initramfs - the boot FIT
-# carries it as a ramdisk subimage.  The image build assembles that FIT, and an
-# on-board kernel upgrade (linux-image-<rel>-t2's postinst, which Depends on
-# this package) assembles an identical one from these exact bytes.  The file
-# lives under /boot, which on the board is an ordinary rootfs directory: the
-# profile's /etc/fstab carries no entries and the boot FAT is mounted on demand
-# by t2-utils' t2-boot-commit.sh, so nothing shadows it.
+# carries it as a ramdisk subimage, and the boot tree carries the same bytes as
+# /initramfs-t2.gz, which is the file the `t2-installer` entry names (an entry
+# with an `fdt` makes U-Boot drop the FIT's own ramdisk: images/t2-boot-fat.py).
+# The image build assembles both, and an on-board kernel upgrade
+# (linux-image-<rel>-t2's postinst, which Depends on this package) assembles
+# them again from these exact bytes.  The file lives under /boot, which on the
+# board is an ordinary rootfs directory: the profile's /etc/fstab carries no
+# entries and the boot FAT is mounted on demand by t2-utils'
+# t2-boot-commit.sh, so nothing shadows it.
 #
 # Usage: package.sh [VERSION] [OUT.deb]
 #   VERSION  defaults to 0.1.0~<git describe --tags --always --dirty>

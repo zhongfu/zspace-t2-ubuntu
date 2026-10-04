@@ -8,7 +8,7 @@ paths from its own location, so it runs from any clone path.
 
 | File | Purpose |
 |---|---|
-| `t2-boot-fat.py` | build the FAT boot tree mainline U-Boot's bootstd reads: `/Image`, `/Image.emmc`, the DTB, `/extlinux/extlinux.conf`, `/uboot.env`, `/Image.old` — either as a `boot.vfat` image or as files (`--out-dir`) for the card's config FAT |
+| `t2-boot-fat.py` | build the FAT boot tree mainline U-Boot's bootstd reads: `/Image`, `/Image.emmc`, `/initramfs-t2.gz`, `/initrd.img`, the DTB, `/extlinux/extlinux.conf`, `/uboot.env`, `/Image.old` — either as a `boot.vfat` image or as files (`--out-dir`) for the card's config FAT. Every entry names its ramdisk as one of those files: an entry with an `fdt` makes U-Boot drop a FIT's own ramdisk |
 | `t2-image.py` | assemble a whole-disk image: GPT at the vendor's eMMC offsets, the loader, the FIT and the rootfs, plus the optional `T2-CONFIG` FAT and `T2-FLASH` ext4 partitions |
 | `build-installer.sh` | run the whole installer-card build end to end (the entry point) |
 
@@ -33,7 +33,7 @@ installer partitions:
 | p4 `recovery` | `0x28000` | 32 MiB | empty (kept empty on purpose, same reason) |
 | p5 `backup` | `0x38000` | 32 MiB | empty (kept empty on purpose) |
 | p6 `rootfs` | `0x48000` | to the end | empty on the installer card (`--rootfs none`); on a normal SD card it holds `rootfs.ext4` |
-| p7 `config` | after p6 | 256 MiB | FAT volume labelled **`T2-CONFIG`**: `/t2-config.txt` plus the boot tree as files — `/Image`, `/Image.emmc`, the DTB, `/extlinux/extlinux.conf`, `/extlinux/t2-emmc.conf`, `/uboot.env`, `/Image.old`, `/u-boot.itb`, `/idbloader.img` |
+| p7 `config` | after p6 | 256 MiB | FAT volume labelled **`T2-CONFIG`**: `/t2-config.txt` plus the boot tree as files — `/Image`, `/Image.emmc`, `/initramfs-t2.gz`, `/initrd.img`, the DTB, `/extlinux/extlinux.conf`, `/extlinux/t2-emmc.conf`, `/uboot.env`, `/Image.old`, `/u-boot.itb`, `/idbloader.img` |
 | p8 `flash` | after p7 | rootfs + slack | ext4 volume labelled **`T2-FLASH`** holding `/rootfs.ext4.zst` |
 
 The card's own boot chain is the FIT at LBA `0x8000` plus the bootstd tree on
@@ -41,8 +41,9 @@ The card's own boot chain is the FIT at LBA `0x8000` plus the bootstd tree on
 so the initramfs runs the installer and writes the eMMC.  The tree's `/Image`
 is the card FIT with the installer ramdisk; `/Image.emmc` is the eMMC FIT with
 the distribution's initramfs-tools ramdisk, which `installer.sh` copies to the
-eMMC's boot tree as `/Image`.  `t2-emmc.conf` is the descriptor the installer
-promotes to the eMMC's `/extlinux/extlinux.conf`.
+eMMC's boot tree as `/Image` (with `/initrd.img`, the ramdisk its entries name -
+not the FIT's own subimage, see `t2-boot-fat.py`).  `t2-emmc.conf` is the
+descriptor the installer promotes to the eMMC's `/extlinux/extlinux.conf`.
 `/t2-config.txt` arms the flash flow (`flash.presses`, `flash.window`,
 `flash.sha256`, …); see `t2-install-card-config.example.txt`.
 

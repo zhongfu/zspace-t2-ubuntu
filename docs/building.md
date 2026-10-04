@@ -96,8 +96,9 @@ initramfs layout, plus a static `zstd` built from a pinned tarball: the
 installer streams its payloads through `zstd -dc` on the board, and busybox has
 no zstd applet, so both live in the initramfs.  It then packs the tree into
 `build/initramfs.gz`.  That file is the installer ramdisk: the card FIT's
-**ramdisk** and the payload of the `t2-initramfs` package, which is why nothing
-else has to run before it.
+**ramdisk**, the boot tree's `/initramfs-t2.gz` (the file the `t2-installer`
+entry actually boots) and the payload of the `t2-initramfs` package, which is
+why nothing else has to run before it.
 
 Step 4 (`rootfs/build.sh`, which runs `t2-distro.py`) builds the rootfs ext4
 image.  It installs the fetched `t2-utils` package and the fetched
@@ -116,10 +117,24 @@ eMMC FIT.  The kernel Image does **not** embed either initramfs: each FIT
 carries its ramdisk as a subimage (kernel + device tree + ramdisk), assembled by
 `t2-mkfit` (shipped by the `t2-utils` package, so the image build and the board
 use one implementation).  The card's `/Image` is the installer ramdisk; the
-eMMC's `/Image` comes from `/Image.emmc` and boots the distribution's
-initramfs-tools image.  The ramdisks are stored uncompressed because this U-Boot
-does not decompress a FIT ramdisk, and each FIT's default configuration selects
-all three subimages.
+eMMC's `/Image` comes from `/Image.emmc` and carries the distribution's
+initramfs-tools image.  Those FIT ramdisks are stored uncompressed because this
+U-Boot does not decompress a FIT ramdisk, and they are what the vendor-layout
+boot partition mirror boots.
+
+The **entries** do not boot them.  A bootstd entry that names an `fdt` makes
+U-Boot pass the literal `-` as bootm's ramdisk argument (`boot/pxe_utils.c`),
+which `boot_get_ramdisk()` reads as "no ramdisk" (`boot/image-board.c`), so the
+FIT's own subimage is skipped and the kernel - with no embedded initramfs and no
+`root=` - panics in `mount_root()` before `/init`.  Step 5 therefore writes the
+ramdisks into the boot tree as *files* and every entry names one:
+`/initramfs-t2.gz` (the installer ramdisk, from `build/initramfs.gz`) for
+`t2-installer`, and `/initrd.img` (from `build/out/initrd.img-<rel>`) for the
+`t2-emmc` entries.  U-Boot's pxe loader reads the file into `ramdisk_addr_r` and
+passes `<addr>:<size>`, which `CONFIG_SUPPORT_RAW_INITRD` accepts (the board's
+defconfig gets it from bootstd's `select`s, so a raw or gzip'd cpio both work;
+the kernel decompresses the gzip itself).  The names are the ones the installed
+rootfs carries under `/boot`, so a boot tree is a copy of that.
 
 All build output goes to `build/`, which git ignores.  Finished artefacts go to
 `build/out/`.
@@ -235,10 +250,12 @@ details for the image's packages.
 
 An **on-board kernel upgrade** works the same way: `linux-image-<rel>-t2`
 depends on `t2-initramfs`, and its `postinst` regenerates the distribution's
-initramfs and assembles a boot FIT from the kernel, the board device tree and
-`/boot/initrd.img-<rel>` with `t2-mkfit`, then installs it into the boot tree.
-A rootfs without `initramfs-tools` falls back to `/boot/initramfs-t2.gz`, the
-installer ramdisk.  The boot tree is addressed by `T2_BOOT_DIR`; when it is
+initramfs, assembles a boot FIT from the kernel, the board device tree and
+`/boot/initrd.img-<rel>` with `t2-mkfit`, installs it into the boot tree as
+`/Image`, copies the ramdisk into the tree as `/initrd.img` (and
+`/boot/initramfs-t2.gz` as `/initramfs-t2.gz`) and rewrites the descriptor with
+the matching `initrd` lines.  A rootfs without `initramfs-tools` falls back to
+`/boot/initramfs-t2.gz`, the installer ramdisk.  The boot tree is addressed by `T2_BOOT_DIR`; when it is
 unset (the image-build chroot, and every board today) the package skips the FIT
 with a clear message and exits 0.
 
@@ -319,11 +336,16 @@ The build verifies the image by structure and content: the partition table, the
 boot tree, the FIT's kernel + device-tree + ramdisk subimages, and the mountable
 rootfs.  Two things can only be confirmed on the board:
 
-* **The FIT ramdisk boot path.**  U-Boot must hand the FIT's ramdisk subimage to
-  the kernel when the generated `extlinux.conf` carries no `INITRD` line.  It
-  deliberately has none, so `booti` uses the FIT configuration's ramdisk
-  (checked against U-Boot's `boot/pxe_utils.c` and `boot/image-board.c`), but no
-  board has booted this exact FIT yet.
+* **The initrd boot path.**  The first board boot of an `installer.img` built
+  this way is still pending.  The previous arrangement (no `initrd` line, on the
+  theory that `booti` would use the FIT configuration's ramdisk) was wrong: the
+  log shows U-Boot loading the kernel and the fdt only, the FIT's ramdisk never
+  loaded, and the kernel panicking with `VFS: Unable to mount root fs on
+  unknown-block(0,0)` - with a ramdisk in the FIT *and* no `root=` on the
+  cmdline, there was nothing for it to mount.  `pxe_utils.c`'s `label_boot()`
+  passes `-` as bootm's ramdisk argument whenever the entry names an `fdt`, and
+  `boot_get_ramdisk()` reads `-` as "no ramdisk" - hence the file-based entries
+  above, which is what the board now has to confirm.
 * **The eMMC write.**  The installer's repartition and payload write is
   exercised against files, not a real eMMC; the first full install on hardware
   is still the real test.

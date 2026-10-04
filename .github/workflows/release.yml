@@ -140,10 +140,6 @@ jobs:
             echo "See \`docs/using.md\` for the install steps."
             echo
             cat dist/release-files.md
-            echo
-            echo "## Firmware licence"
-            echo
-            echo "The images embed the AP6275P WiFi and Bluetooth firmware.  The four vendor blobs are committed in this repository.  They are **not redistributable** and are not in linux-firmware or the Ubuntu firmware packages; the build embeds them under the vendor's terms.  Anyone who reuses these artefacts must respect those terms."
           } > dist/release-notes.md
 
       - name: Publish the release
