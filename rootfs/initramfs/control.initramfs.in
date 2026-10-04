@@ -1,0 +1,16 @@
+Package: t2-initramfs
+Version: @VERSION@
+Architecture: all
+Section: admin
+Priority: optional
+Maintainer: zhongfu <me@zhongfu.li>
+Installed-Size: @INSTALLED_SIZE@
+Description: ZSpace T2 boot initramfs
+ The bring-up initramfs the ZSpace T2 (Rockchip RK3568) boots: it resolves and
+ mounts the root filesystem named on the kernel cmdline, and with t2.mode=flash
+ it runs the installer that writes the eMMC.
+ .
+ The kernel Image does not embed it.  The boot FIT carries this file as its
+ ramdisk subimage, so an on-board kernel upgrade (linux-image-<rel>-t2's
+ postinst, which Depends on this package) assembles a bootable FIT from the
+ kernel, the board DTB and these bytes.

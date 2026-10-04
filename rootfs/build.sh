@@ -23,7 +23,6 @@ repo=$(CDPATH= cd -- "$here/.." && pwd)
 profile=$here/profiles/t2-base
 work=$repo/build/rootfs
 out=$repo/build/out
-kernel_tree=$repo/build/kernel
 initramfs=$repo/build/initramfs
 fit=$out/t2-mainline-boot.img
 
@@ -127,19 +126,20 @@ else
 fi
 
 # ------------------------------------------------------------ 4. rootfs image
-[ -d "$kernel_tree" ] || { [ "$dry" = 1 ] || die \
-    "kernel tree $kernel_tree is missing; run kernel/fetch.sh && kernel/build.sh"; }
+# The kernel and the boot chain come from the component repositories, staged
+# into build/out/ by build-all.sh step 1; this step builds no kernel.
+[ -f "$out/Image" ] || { [ "$dry" = 1 ] || die \
+    "no $out/Image; run build-all.sh step 1 (it fetches and stages the components)"; }
 
 # The FIT is built later by images/ (build/out/t2-mainline-boot.img).  Only
 # check it when it is there; a rootfs-only build must not fail on it.
-t2_args=(--profile "$profile" --out "$work" --kernel-tree "$kernel_tree" -j "$jobs")
+t2_args=(--profile "$profile" --out "$work" -j "$jobs")
 if [ "$no_fit_check" = 1 ]; then
     t2_args+=(--no-fit-check)
 elif [ ! -f "$fit" ]; then
     t2_args+=(--no-fit-check)
     echo "note: $fit is absent (images/ builds it later); skipping the FIT check"
-elif [ "$kernel_tree/arch/arm64/boot/Image" -nt "$fit" ] \
-     || [ "$kernel_tree/arch/arm64/boot/dts/rockchip/rk3568-t2.dtb" -nt "$fit" ]; then
+elif [ "$out/Image" -nt "$fit" ] || [ "$repo/build/initramfs.gz" -nt "$fit" ]; then
     # A re-run after a kernel change lands here, and the freshness check below
     # would then fail this build over the FIT - which this step does not even
     # ship, and which images/ refills in step 8 regardless.  Refresh it from the
@@ -148,11 +148,11 @@ elif [ "$kernel_tree/arch/arm64/boot/Image" -nt "$fit" ] \
     if [ "$dry" = 1 ]; then
         echo "[dry] would refresh the stale $fit"
     else
-        echo "== refreshing $fit (stale: the kernel tree is newer) =="
-        python3 "$repo/images/rk-fit.py" \
-            --kernel "$kernel_tree/arch/arm64/boot/Image" \
-            --dtb "$kernel_tree/arch/arm64/boot/dts/rockchip/rk3568-t2.dtb" \
-            --out "$fit"
+        echo "== refreshing $fit (stale: the kernel or the initramfs is newer) =="
+        mkfit=$repo/build/components/utils/unpacked/usr/bin/t2-mkfit
+        [ -x "$mkfit" ] || die "no $mkfit; run build-all.sh step 1 first"
+        python3 "$mkfit" --kernel "$out/Image" --dtb "$out/rk3568-t2.dtb" \
+            --ramdisk "$repo/build/initramfs.gz" --out "$fit"
     fi
 fi
 [ "$dry" = 1 ] && t2_args+=(--dry-run)

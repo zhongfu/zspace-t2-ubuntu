@@ -1,18 +1,26 @@
 name: Build
 
-# Build the boot chain on pull requests and branch pushes, so breakage shows up
-# before a release.  No artefacts are kept: release.yml does that on a tag.
+# Build this repository's share of the boot chain on pull requests and branch
+# pushes, so breakage shows up before a release.  No artefacts are kept:
+# release.yml does that on a tag.
 #
-# The boot chain is build-all.sh steps 1 to 6: the vendor firmware, the
-# initramfs that embeds it, the kernel and U-Boot - everything the board needs
-# to boot.  It skips the rootfs and the installer image (steps 7 and 8), which
-# are the slowest and need the most network, and which release.yml builds
-# anyway.  Step 1 is not optional even though it is only verification: it writes
-# the driver-named firmware copies the initramfs embeds.
+# The build is split across four repositories.  This one builds the initramfs,
+# the installer, the rootfs and the image, and consumes the kernel, U-Boot and
+# t2-utils that the other three publish.  components.lock pins those artefacts
+# by sha256, so the `components` job fetches and verifies them, and the
+# `boot-chain` job builds what this repository contributes to booting: the
+# vendor firmware (step 2) and the initramfs (step 3) that the boot FIT carries
+# as its ramdisk.  The rootfs and the installer image (steps 4 and 5) are the
+# slowest and need the most network, and release.yml builds them anyway.
 #
-# arm64 only: that is what the board is, and GitHub's arm64 runners are free for
-# public repositories.  The vendor WiFi/BT firmware is committed in the
-# repository, so no secret or setup is needed.
+# `boot-chain` runs after `components` so a lock that cannot be fetched fails
+# CI before any build starts.  Steps 2 and 3 do not read the fetched artefacts
+# (steps 4 and 5 do, and release.yml builds those), so it builds from the
+# checkout alone.
+#
+# T2_COMPONENTS_ORG (repository variable) names the GitHub org that owns the
+# three component repositories.  There is no safe default in CI, so an unset
+# variable fails `components` with a clear message.
 on:
   push:
     branches: ['**']
@@ -27,9 +35,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  components:
+    # Fetch every pinned component artefact from the component releases
+    # (sha256-verified against components.lock), then verify the fetched tree
+    # offline.  No Docker and no arm64 runner, so this is the fastest signal
+    # that the lock is usable.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Fetch the pinned components
+        env:
+          T2_COMPONENTS_ORG: ${{ vars.T2_COMPONENTS_ORG }}
+        run: |
+          if [ -z "${T2_COMPONENTS_ORG:-}" ]; then
+            echo "error: repository variable T2_COMPONENTS_ORG is not set" >&2
+            echo "       Settings > Secrets and variables > Actions > Variables" >&2
+            echo "       set it to the GitHub org that owns zspace-t2-kernel," >&2
+            echo "       zspace-t2-bootloader and zspace-t2-ubuntu-utils" >&2
+            exit 1
+          fi
+          python3 tools/components.py fetch
+
+      - name: Verify the fetched tree against components.lock
+        run: python3 tools/components.py fetch --check
+
+  boot-chain:
+    # arm64 only: that is what the board is, and GitHub's arm64 runners are free
+    # for public repositories.  The vendor WiFi/BT firmware is committed in the
+    # repository, so no secret or setup is needed.
+    #
+    # It runs after `components`, so a lock that cannot be fetched fails CI
+    # before any build starts.  Steps 2 and 3 do not read the fetched artefacts
+    # (steps 4 and 5 do, and release.yml builds those), so the job builds from
+    # the checkout alone.
+    needs: components
     runs-on: ubuntu-26.04-arm
-    timeout-minutes: 240
+    timeout-minutes: 120
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -40,5 +84,5 @@ jobs:
                       /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
 
-      - name: Build the boot chain (firmware, initramfs, kernel, U-Boot)
-        run: ./docker-build.sh ./build-all.sh --from 1 --to 6
+      - name: Build the boot chain (vendor firmware, initramfs)
+        run: ./docker-build.sh ./build-all.sh --only 2,3

@@ -34,8 +34,9 @@
 #     resolves its version from these lists, so rebuild the image when they go
 #     stale.
 #   * bzip2 is not in the docs table but the pinned BusyBox source is a
-#     .tar.bz2.  cpio is not needed: the kernel embeds the initramfs tree with
-#     its in-tree gen_init_cpio.
+#     .tar.bz2.  cpio packs the initramfs into the boot FIT's ramdisk: the
+#     kernel Image no longer embeds the tree, and the kernel's in-tree
+#     gen_init_cpio is not reachable from this repository.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -55,7 +56,7 @@ RUN apt-get update \
         gcc-aarch64-linux-gnu $target_pkgs \
         bc bison flex libssl-dev device-tree-compiler \
         python3 python3-dev python3-setuptools python3-pyelftools swig \
-        fakeroot e2fsprogs zstd dosfstools mtools util-linux kmod \
+        fakeroot e2fsprogs zstd dosfstools mtools util-linux kmod cpio \
         curl tar bzip2 \
     && apt-get clean
 

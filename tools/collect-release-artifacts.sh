@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Collect the release assets from a finished build into one directory, and
-# write the file list for the release notes.
+# write the file list and the pinned-component table for the release notes.
 #
 # Usage: tools/collect-release-artifacts.sh [options] [SRC] [DEST]
 #
@@ -9,13 +9,20 @@
 #   DEST            staging directory for assets (default: dist/release)
 #   --src DIR       same as the first positional argument
 #   --dest DIR      same as the second positional argument
+#   --lock FILE     components.lock to ship and read (default: <repo>/components.lock)
 #   --notes FILE    also write the "files" section of the release notes
 #   -h, --help
 #
-# SRC is build/out after a full build (build-all.sh).  The t2-utils Debian
-# package is found by glob, never by a hard-coded path, so wherever the rootfs
-# build puts it CI finds it.  Every required asset must be there: the script
-# fails loudly instead of publishing an incomplete release.
+# SRC is build/out after a full build (build-all.sh).  The release carries only
+# what this repository builds: installer.img, rootfs.ext4.zst, the t2-initramfs
+# package and components.lock.  The kernel, U-Boot, t2-utils and the raw
+# boot-chain files are built by the three component repositories and pinned in
+# components.lock; they are not this release's to publish.
+#
+# build/out holds exactly one .deb, the t2-initramfs package.  It is found by
+# glob, never by a hard-coded version (the version lives in the artefact name,
+# which is the profile's business), and the script fails if it finds zero, more
+# than one, or a package that is not t2-initramfs.
 #
 # The release carries a SHA256SUMS file it generates itself; run
 # `sha256sum -c SHA256SUMS` in the download directory to check it.
@@ -27,6 +34,7 @@ root=$(CDPATH= cd -- "$here/.." && pwd)
 src=$root/build/out
 dest=$root/dist/release
 notes=
+lock=$root/components.lock
 
 usage() {
     cat <<'EOF'
@@ -37,6 +45,7 @@ Usage: tools/collect-release-artifacts.sh [options] [SRC] [DEST]
   DEST          staging directory for assets  (default: dist/release)
   --src DIR     same as the first positional argument
   --dest DIR    same as the second positional argument
+  --lock FILE   components.lock to ship and read (default: <repo>/components.lock)
   --notes FILE  write the release-notes "files" section to FILE
   -h, --help    this text
 EOF
@@ -48,6 +57,7 @@ while [ $# -gt 0 ]; do
         -h|--help) usage; exit 0 ;;
         --src)  src=$2; shift 2 ;;
         --dest) dest=$2; shift 2 ;;
+        --lock) lock=$2; shift 2 ;;
         --notes) notes=$2; shift 2 ;;
         -*) echo "collect-release-artifacts: unknown option: $1" >&2; exit 2 ;;
         *)
@@ -62,6 +72,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ -d "$src" ] || { echo "error: source directory $src does not exist" >&2; exit 1; }
+[ -f "$lock" ] || {
+    echo "error: no components.lock at $lock" >&2
+    echo "       the release must name the component versions it was built from" >&2
+    exit 1
+}
 
 # --------------------------------------------------------------------------
 # The release assets.  One source of truth for what is copied and for the
@@ -71,85 +86,46 @@ done
 required=(
     installer.img
     rootfs.ext4.zst
-    Image
-    rk3568-t2.dtb
-    t2-mainline-boot.img
-    u-boot.itb
-    idbloader.img
-    u-boot-installer.itb
-    idbloader-installer.img
-    u-boot-initial-env
-    u-boot-installer-initial-env
-)
-# Carried when the build produced them (not every build does).
-optional=(
-    Image.old
 )
 
 declare -A desc=(
     [installer.img]="Write this SD-card installer image to a card and boot the board. It installs the system to the eMMC. This is the file most users want."
     [rootfs.ext4.zst]="The Ubuntu root filesystem, zstd-compressed. The installer writes it to the eMMC."
-    [Image]="The Linux kernel image."
-    [rk3568-t2.dtb]="The device tree blob for the T2 board."
-    [t2-mainline-boot.img]="The kernel FIT: kernel, device tree and initramfs in one bootable image. U-Boot loads this."
-    [u-boot.itb]="U-Boot bootloader for the eMMC."
-    [idbloader.img]="Rockchip loader for the eMMC: DDR init and the U-Boot SPL."
-    [u-boot-installer.itb]="U-Boot bootloader for the SD-card installer."
-    [idbloader-installer.img]="Rockchip loader for the SD-card installer: DDR init and the U-Boot SPL."
-    [u-boot-initial-env]="The U-Boot default environment for the eMMC image."
-    [u-boot-installer-initial-env]="The U-Boot default environment for the SD-card installer."
-    [Image.old]="The previous kernel image, kept for the U-Boot A/B fallback."
+    [components.lock]="The exact component releases and artefact sha256s this image was built from: the kernel, U-Boot and t2-utils that went into it. Commit this if you rebuild the image."
     [SHA256SUMS]="SHA-256 checksums for every file in this release. Check them with sha256sum -c SHA256SUMS."
 )
 
 # --------------------------------------------------------------------------
-# Discover the t2-utils package and its apt repo.  The rootfs build writes the
-# .deb next to a Packages index (the repo the installed image reads from
-# /opt/t2/repo); the exact host directory is an implementation detail, so glob
-# for it in one marked place and never guess a path.
+# Discover the t2-initramfs package.  build/out holds exactly one .deb (the
+# boot initramfs this repository builds); more than one would mean two builds'
+# output were mixed, and a different package name would be an unexpected input.
 # --------------------------------------------------------------------------
 shopt -s nullglob
-declare -A deb_seen=()
-deb_candidates=()
-for pat in "$src"/*.deb "$src"/repo/*.deb "$root"/build/rootfs/repo/*.deb; do
-    for f in $pat; do
-        [ -z "${deb_seen[$f]:-}" ] || continue
-        deb_seen[$f]=1
-        deb_candidates+=("$f")
-    done
-done
-
+deb_candidates=("$src"/*.deb)
 if [ "${#deb_candidates[@]}" = 0 ]; then
-    echo "error: no t2-utils .deb found under $src" >&2
-    echo "       looked for *.deb and repo/*.deb; run the full build (step 7) first" >&2
+    echo "error: no t2-initramfs .deb found under $src" >&2
+    echo "       the rootfs build (step 4) writes it; run the full build first" >&2
     exit 1
 fi
 if [ "${#deb_candidates[@]}" -gt 1 ]; then
-    echo "error: more than one .deb found, cannot tell which to publish:" >&2
+    echo "error: more than one .deb found, build/out must hold only t2-initramfs:" >&2
     printf '       %s\n' "${deb_candidates[@]}" >&2
     exit 1
 fi
 
 deb=${deb_candidates[0]}
 deb_name=$(basename "$deb")
-desc[$deb_name]="The t2-utils package for the T2 board: services, scripts and settings. Install it on a running board with apt-get install ./$deb_name."
-
-# The repo directory is where the .deb was written; the in-image repo also
-# carries the Packages index, but that is a build stage, not an output.  Ship
-# the index with the package when it is alongside or in the kept stage, so a
-# user can serve the same repo the board reads from /opt/t2/repo.
-repo_dir=$(dirname "$deb")
-[ -f "$repo_dir/Packages" ] || repo_dir=$root/build/rootfs/stage/opt/t2/repo
-repo_pkg=
-if [ -f "$repo_dir/Packages" ]; then
-    repo_pkg=t2-utils-apt-repo.tar.gz
-    desc[$repo_pkg]="The local apt repository shipped in the image: the t2-utils package and its Packages index."
-else
-    echo "note: no Packages index found; shipping the .deb on its own" >&2
-fi
+case "$deb_name" in
+    t2-initramfs_*_all.deb) ;;
+    *)
+        echo "error: expected the t2-initramfs package, found $deb_name" >&2
+        exit 1
+        ;;
+esac
+desc[$deb_name]="The boot initramfs the board boots, and the payload an on-board kernel upgrade needs: linux-image-*-t2 depends on this package and assembles a bootable FIT from its /boot/initramfs-t2.gz ramdisk. Install with apt-get install ./$deb_name."
 
 # --------------------------------------------------------------------------
-# Copy.  Fail on a missing required asset, skip a missing optional one.
+# Copy.  Fail on a missing required asset.
 # --------------------------------------------------------------------------
 rm -rf "$dest"
 mkdir -p "$dest"
@@ -164,20 +140,12 @@ for name in "${required[@]}"; do
     install -m 644 "$src/$name" "$dest/$name"
     copied+=("$name")
 done
-for name in "${optional[@]}"; do
-    if [ -f "$src/$name" ]; then
-        install -m 644 "$src/$name" "$dest/$name"
-        copied+=("$name")
-    fi
-done
 
 install -m 644 "$deb" "$dest/$deb_name"
 copied+=("$deb_name")
 
-if [ -n "$repo_pkg" ]; then
-    tar -C "$repo_dir" -czf "$dest/$repo_pkg" .
-    copied+=("$repo_pkg")
-fi
+install -m 644 "$lock" "$dest/components.lock"
+copied+=(components.lock)
 
 # --------------------------------------------------------------------------
 # Checksums (names only, so `sha256sum -c` works in the download directory).
@@ -190,25 +158,13 @@ copied+=(SHA256SUMS)
 
 # --------------------------------------------------------------------------
 # Release-notes file table, in a fixed order: the image users want first, the
-# components next, the checksums last.
+# package they may reinstall next, the lock, the checksums last.
 # --------------------------------------------------------------------------
 notes_order=(
     installer.img
     rootfs.ext4.zst
     "$deb_name"
-)
-[ -n "$repo_pkg" ] && notes_order+=("$repo_pkg")
-notes_order+=(
-    Image
-    rk3568-t2.dtb
-    t2-mainline-boot.img
-    u-boot.itb
-    idbloader.img
-    u-boot-installer.itb
-    idbloader-installer.img
-    u-boot-initial-env
-    u-boot-installer-initial-env
-    Image.old
+    components.lock
     SHA256SUMS
 )
 
@@ -223,6 +179,24 @@ if [ -n "$notes" ]; then
             [ -f "$dest/$name" ] || continue
             printf '| `%s` | %s |\n' "$name" "${desc[$name]}"
         done
+        echo
+        echo "## Components pinned in this release"
+        echo
+        echo "\`components.lock\` pins each component artefact by sha256. These are the component releases this image was built from:"
+        echo
+        echo "| Component | Repository | Release | Commit |"
+        echo "|---|---|---|---|"
+        python3 - "$lock" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as fh:
+    lock = json.load(fh)
+for name in sorted(lock.get("components", {})):
+    spec = lock["components"][name]
+    commit = (spec.get("commit") or "")[:12] or "-"
+    print(f"| {name} | {spec.get('repo', '?')} | {spec.get('tag', '?')} | `{commit}` |")
+PY
     } > "$notes"
 fi
 

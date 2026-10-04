@@ -13,9 +13,10 @@
 # entry (cmdline t2.mode=flash), so the initramfs runs its installer and writes
 # the eMMC: new GPT, a fresh T2-BOOT p3, the rootfs, then U-Boot and the SPL.
 #
-# Inputs (all required, all under build/out/):
+# Inputs (all required; build-all.sh step 1 stages the raw files into
+# build/out/, the initramfs step packs the ramdisk):
 #   Image             rk3568-t2.dtb     u-boot.itb
-#   idbloader.img     rootfs.ext4.zst
+#   idbloader.img     rootfs.ext4.zst   ../initramfs.gz
 # Optional: u-boot-initial-env is added to the tree as /uboot.env whenever it
 # exists, so the installed board keeps our default environment (bootdelay,
 # preboot, bootcmd) instead of the vendor's; Image.old additionally adds the
@@ -65,24 +66,34 @@ die() { echo "build-installer: $*" >&2; exit 1; }
 log() { echo "build-installer: $*" >&2; }
 
 for f in Image rk3568-t2.dtb u-boot.itb idbloader.img rootfs.ext4.zst; do
-	[ -f "$OUT/$f" ] || die "missing $OUT/$f (run kernel/, u-boot/ and rootfs/ builds first)"
+	[ -f "$OUT/$f" ] || die "missing $OUT/$f (run build-all.sh: step 1 stages the components, step 4 builds the rootfs)"
 done
-[ -f "$HERE/rk-fit.py" ] || die "missing $HERE/rk-fit.py"
+[ -f "$BUILD/initramfs.gz" ] || die "missing $BUILD/initramfs.gz (run rootfs/initramfs/build.sh)"
+# The FIT assembler ships in the t2-utils package, so the image build and the
+# board assemble a FIT with one implementation.  build-all.sh step 1 unpacks it
+# from the fetched .deb; this script only checks it is there.
+MKFIT="$BUILD/components/utils/unpacked/usr/bin/t2-mkfit"
+[ -x "$MKFIT" ] || die "no $MKFIT (build-all.sh step 1 unpacks it from the fetched t2-utils package)"
 [ -f "$HERE/t2-boot-fat.py" ] || die "missing $HERE/t2-boot-fat.py"
 [ -f "$HERE/t2-image.py" ] || die "missing $HERE/t2-image.py"
 
-# 1. the mainline kernel FIT (the vendor `boot` partition mirror)
-log "packing the kernel FIT with rk-fit.py"
-"$PY" "$HERE/rk-fit.py" --kernel "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" \
-	--out "$OUT/t2-mainline-boot.img" || die "rk-fit.py failed"
+# 1. the mainline kernel FIT (the vendor `boot` partition mirror, and the file
+# the boot tree ships as /Image).  The kernel Image does not embed the
+# initramfs any more: it rides in the FIT as the ramdisk subimage, which is what
+# lets the installed board mount its root.  t2-mkfit stores it uncompressed
+# because this U-Boot does not decompress a FIT ramdisk.
+log "packing the kernel FIT with t2-mkfit (kernel + dtb + initramfs ramdisk)"
+"$PY" "$MKFIT" --kernel "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" \
+	--ramdisk "$BUILD/initramfs.gz" \
+	--out "$OUT/t2-mainline-boot.img" || die "t2-mkfit failed"
 
 # 2. the boot tree as files, for the card's FAT partition
 TREE="$BUILD/installer-boot-tree"
 PAYLOAD="$BUILD/installer-payload"
 rm -rf "$TREE" "$PAYLOAD"
 log "building the boot tree (t2-boot-fat.py --out-dir)"
-boot_args=(--image "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" --out-dir "$TREE"
-	--flash-append t2.mode=flash)
+boot_args=(--image "$OUT/t2-mainline-boot.img" --dtb "$OUT/rk3568-t2.dtb"
+	--out-dir "$TREE" --flash-append t2.mode=flash)
 # /uboot.env carries the board's own compiled default environment; U-Boot reads
 # its environment from the eMMC's FAT boot partition, so shipping it is what
 # replaces whatever the vendor left there.  install.sh copies it into the new

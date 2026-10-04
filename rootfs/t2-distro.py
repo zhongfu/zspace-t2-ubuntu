@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""t2-build the distro half: a profile -> a flashable rootfs.ext4.
+"""Build the distro half: a profile -> a flashable rootfs.ext4.
 
     rootfs/t2-distro.py --profile rootfs/profiles/t2-base \
                         --out build/rootfs
@@ -27,17 +27,17 @@ and re-runs every later stage that consumed a rebuilt one; changing the base
 tarball wipes the whole stage, stamps included.  The stamps are lifted out
 around mke2fs so they never ship in the image.
 
-Reused from the repo's shared pipeline code, lib/t2-build.py (loaded with
-importlib - the name has a hyphen): Runner, build_env, sha256_file,
-parse_size, artifact, flash_plan.  lib/rkimg.py supplies the FIT/DTS parsing
-for the shipped-FIT check.  Both live once at <repo>/lib/ and are found from
-this script's own location, so the tree works from any clone path.
-The kernel/FIT half stays in t2-build.py; this driver never touches it.
+Reused from the repo's shared library code, lib/t2lib.py (loaded with
+importlib): Runner, sha256_file, parse_size, artifact, flash_plan.
+lib/rkimg.py supplies the FIT/DTS parsing for the shipped-FIT check.  Both
+live once at <repo>/lib/ and are found from this script's own location, so the
+tree works from any clone path.
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -54,7 +54,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # --------------------------------------------------------------------------
-# the shared pipeline code (t2-build.py) and this repo's fixed facts
+# the shared t2lib helpers and this repo's fixed facts
 # --------------------------------------------------------------------------
 SCRIPTS = Path(__file__).resolve().parent        # <repo>/rootfs
 ROOT = SCRIPTS.parent                            # <repo>
@@ -64,21 +64,20 @@ if str(LIB) not in sys.path:
 import rkimg  # noqa: E402  (FIT/DTS parsing for the shipped-FIT check)
 
 
-def _load_t2_build():
-    spec = importlib.util.spec_from_file_location("t2_build",
-                                                  LIB / "t2-build.py")
+def _load_t2lib():
+    spec = importlib.util.spec_from_file_location("t2lib",
+                                                  LIB / "t2lib.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-T2B = _load_t2_build()
-Runner = T2B.Runner            # prints every command, honours --dry-run
-build_env = T2B.build_env      # host environment the manual build used
-sha256_file = T2B.sha256_file
-parse_size = T2B.parse_size
-artifact = T2B.artifact        # {name, path, size, sha256}
-flash_plan = T2B.flash_plan    # rockusb `wl` chunk arithmetic
+T2L = _load_t2lib()
+Runner = T2L.Runner            # prints every command, honours --dry-run
+sha256_file = T2L.sha256_file
+parse_size = T2L.parse_size
+artifact = T2L.artifact        # {name, path, size, sha256}
+flash_plan = T2L.flash_plan    # rockusb `wl` chunk arithmetic
 
 STAGES = ("base", "tools", "packages", "overlay", "debs", "hooks", "modules",
           "image", "verify", "manifest")
@@ -146,14 +145,25 @@ RESOLV_CONF = Path("/etc/resolv.conf")
 # The profile's inputs that hooks read through the read-only /t2-profile
 # bind (image.json: firmware_src is a repo-root relative path).
 PROFILE_MNT = "/t2-profile"
-# The board userspace ships as a real Debian package.  rootfs/packages/<name>/
-# is its source: the payload tree under root/ plus DEBIAN metadata and the
-# build.sh that assembles the .deb.  The driver builds it, drops the .deb into
-# a flat apt repo *inside the image* (REPO_DIR) and installs it from that repo,
-# so the build exercises the same offline `apt-get install/upgrade` a running
-# board uses.
+# The board userspace ships as a real Debian package, but this repository no
+# longer builds it: zspace-t2-ubuntu-utils does, and components.lock pins the
+# .deb by sha256.  The image carries it in a flat apt repo *inside the image*
+# (REPO_DIR) and installs it from that repo, so the build exercises the same
+# offline `apt-get install/upgrade` a running board uses.
 PACKAGE = "t2-utils"
-PACKAGE_DIR = SCRIPTS / "packages" / PACKAGE
+# The fetched component artefacts, staged by tools/components.py (build-all.sh
+# step 1).  A file missing here is a build error, not something to work around:
+# the lock pins each one's sha256 and the fetch step verifies it.
+COMPONENTS = ROOT / "build" / "components"
+# The boot initramfs is the one package this repository still builds
+# (rootfs/initramfs/package.sh).  The kernel Image no longer embeds it: the boot
+# FIT carries it as a ramdisk subimage, and an on-board kernel upgrade needs the
+# same bytes on disk.
+INITRAMFS_PACKAGE = "t2-initramfs"
+# The packed initramfs (build-all.sh step 3).  Its bytes are the boot FIT's
+# ramdisk and the t2-initramfs package's payload, so its hash is what makes the
+# debs stage re-run when the initramfs changed.
+RAMDISK = ROOT / "build" / "initramfs.gz"
 REPO_DIR = "/opt/t2/repo"
 # Per-stage freshness stamps, kept *inside* <out>/stage so that wiping the
 # stage (a changed base tarball) also drops them and forces every stage to
@@ -204,11 +214,6 @@ REQUIRED_PATHS = (
     "/usr/local/sbin/t2-ble.py",
     "/usr/local/sbin/t2-ble-password",
 )
-
-# The kernel the image's modules must match.  kernel/fetch.sh clones the
-# patched Linux tree here and kernel/build.sh builds it, so `uname -r` on the
-# board is this tree's `kernelrelease`.
-DEFAULT_KERNEL_TREE = ROOT / "build/kernel"
 
 # The board needs these from the FIT kernel (spelled as modules.dep spells
 # them).  The NVMe *core* and the RK809 PMIC power key are built-in
@@ -277,26 +282,6 @@ def tree_hash(roots) -> str:
     for rel, kind, val in sorted(entries):
         h.update(f"{rel}\0{kind}\0{val}\0".encode())
     return h.hexdigest()
-
-
-def ko_hash(tree: Path) -> str:
-    """sha256 over a kernel tree's built modules (content, sorted).
-
-    Used by the modules stage: a kernel patch edit leaves `.config` and the
-    release string (`git describe --dirty`) identical, so the built .ko are the
-    only thing that shows the tree changed.
-    """
-    return tree_hash([p for p in tree.rglob("*.ko") if p.is_file()])
-
-
-def modules_stamp(tree: Path, rel: str) -> str:
-    """The modules stage's freshness stamp: config, release, tree, built .ko.
-
-    A kernel patch edit leaves `.config` and the release string (`git describe
-    --dirty`) identical, so the built modules are the only thing that shows the
-    tree changed - without them the stage would ship stale .ko into the image.
-    """
-    return f"{sha256_file(tree / '.config')} {rel} {tree} {ko_hash(tree)}"
 
 
 def stamp_path(stage: Path, name: str) -> Path:
@@ -1123,13 +1108,12 @@ def prune_overlay(ledger: Path, stage: Path, shipped: set,
 # stage: debs
 # --------------------------------------------------------------------------
 def package_version(prof: Profile) -> str:
-    """The t2-utils Debian version: the profile's base release, sanitised.
+    """The version of the package *this* repository builds (t2-initramfs).
 
-    The rootfs build already derives this string (base.json `release`; the
-    manifest records it under `base`), and tying the package version to the
-    distro release it was built against is the one version number the profile
-    owns.  A Debian version may carry [0-9A-Za-z.+~], so anything else is
-    dropped; a profile with no release falls back to the documented
+    The fetched components carry their own versions, which the driver reads
+    from their .deb control fields (`deb_version`).  The initramfs package is
+    built here, so it follows the profile's base release - the one version
+    number the profile owns - and falls back to the documented
     `0.1.0~<git describe --tags --always --dirty>`.
     """
     rel = re.sub(r"[^0-9A-Za-z.+~]", "", str(prof.base.get("release") or ""))
@@ -1141,39 +1125,57 @@ def package_version(prof: Profile) -> str:
     return "0.1.0~" + re.sub(r"[^0-9A-Za-z.+~]", "", out)
 
 
-def write_repo(stage: Path, deb: Path) -> Path:
+def deb_version(deb: Path) -> str:
+    """The Debian version of a built .deb, from its own control field.
+
+    Packages are built in other repositories now, so their version is a fact
+    about the artefact rather than something this driver derives; reading it
+    keeps the manifest honest about what was installed.
+    """
+    return deb_field(deb, "Version")
+
+
+def write_repo(stage: Path, debs: list[Path]) -> list[Path]:
     """A flat apt repo inside the image: REPO_DIR plus its Packages index.
 
     Built by hand rather than with dpkg-scanpackages: the build image has no
-    dpkg-dev, and one package needs one Packages entry.  The index fields come
-    from the .deb's own control; the long description must stay last, or apt
-    reads the Filename/size/hash lines as more description text (ordering is
-    what dpkg-scanpackages produces).  `[trusted=yes]` in the source line lets
-    apt use it without a Release signature - the repo ships the image's own
-    package, not a third-party feed.
+    dpkg-dev, and the image carries two packages, so one entry per .deb is
+    enough.  The index fields come from each .deb's own control; the long
+    description must stay last in an entry, or apt reads the Filename/size/hash
+    lines as more description text (ordering is what dpkg-scanpackages
+    produces).  `[trusted=yes]` in the source line lets apt use it without a
+    Release signature - the repo ships the image's own packages, not a
+    third-party feed.
     """
     repo = stage / REPO_DIR.lstrip("/")
     if repo.exists():
         shutil.rmtree(repo)
     repo.mkdir(parents=True)
-    local = repo / deb.name
-    shutil.copy2(deb, local)
 
-    control = subprocess.run(["dpkg-deb", "-f", str(local)],
-                             capture_output=True, text=True,
-                             check=True).stdout.splitlines()
-    idx = next(i for i, l in enumerate(control)
-               if l.startswith("Description:"))
-    head, desc = control[:idx], control[idx:]
-    head += [f"Filename: ./{local.name}", f"Size: {local.stat().st_size}"]
-    # a Packages entry spells the digest fields MD5sum and SHA256 (no "sum")
-    for field, digest in (("MD5sum", hashlib.md5), ("SHA256", hashlib.sha256)):
-        h = digest()
-        with local.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        head.append(f"{field}: {h.hexdigest()}")
-    (repo / "Packages").write_text("\n".join(head + desc) + "\n\n")
+    local = []
+    entries = []
+    for deb in debs:
+        dest = repo / deb.name
+        shutil.copy2(deb, dest)
+        local.append(dest)
+
+        control = subprocess.run(["dpkg-deb", "-f", str(dest)],
+                                 capture_output=True, text=True,
+                                 check=True).stdout.splitlines()
+        idx = next(i for i, l in enumerate(control)
+                   if l.startswith("Description:"))
+        head, desc = control[:idx], control[idx:]
+        head += [f"Filename: ./{dest.name}", f"Size: {dest.stat().st_size}"]
+        # a Packages entry spells the digest fields MD5sum and SHA256 (no "sum")
+        for field, digest in (("MD5sum", hashlib.md5),
+                              ("SHA256", hashlib.sha256)):
+            h = digest()
+            with dest.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            head.append(f"{field}: {h.hexdigest()}")
+        entries.append("\n".join(head + desc) + "\n")
+    (repo / "Packages").write_text("\n".join(entries) + "\n")
 
     src = stage / "etc/apt/sources.list.d/t2.list"
     src.parent.mkdir(parents=True, exist_ok=True)
@@ -1181,54 +1183,81 @@ def write_repo(stage: Path, deb: Path) -> Path:
     return local
 
 
-def deb_facts(local: Path, version: str) -> dict:
-    return {"package": PACKAGE, "version": version,
-            "deb": f"{REPO_DIR}/{local.name}", "sha256": sha256_file(local),
-            "repo": REPO_DIR, "installed": True}
+def deb_facts(locals_: list[Path]) -> dict:
+    """What the manifest records about the packages the image installed."""
+    return {"installed": True,
+            "debs": [{"package": subprocess.run(
+                          ["dpkg-deb", "-f", str(deb), "Package"],
+                          capture_output=True, text=True,
+                          check=True).stdout.strip(),
+                      "version": deb_version(deb),
+                      "deb": f"{REPO_DIR}/{deb.name}",
+                      "sha256": sha256_file(deb)} for deb in locals_]}
+
+
+def component_deb(comp: str, pattern: str) -> Path:
+    """The one fetched .deb of a component, or a build error.
+
+    Globbed, never hard-coded: the version lives in the artefact's name, which
+    is the component's business, and components.lock already pinned its bytes.
+    More than one match would mean two versions in build/components/, which the
+    fetch step cannot produce and this build must not guess about.
+    """
+    found = sorted((COMPONENTS / comp).glob(pattern))
+    if len(found) != 1:
+        die(f"expected exactly one {pattern} in {COMPONENTS / comp}, found "
+            f"{len(found)}: run tools/components.py fetch first")
+    return found[0]
 
 
 def stage_debs(args, R: Runner, prof: Profile, stage: Path, ch: Chroot,
                force: bool = False) -> bool:
-    """Build t2-utils, ship it in the image's apt repo, install it from there.
+    """Install the image's packages from a flat apt repo inside the image.
 
-    The package now provides the board files the profile overlay used to copy
-    verbatim, so this stage replaces that copy: it is the same content at the
-    same paths, owned by dpkg.  Installing from the file: repo is deliberate -
-    the path a running board takes (`apt-get install/upgrade t2-utils`) is what
-    the build exercises, and the repo it reads ships in the image.
+    Two packages: the board userspace (t2-utils), built by
+    zspace-t2-ubuntu-utils and pinned by components.lock, and the boot
+    initramfs (t2-initramfs), built here because the kernel Image no longer
+    embeds it.  Both replace files the profile overlay used to copy verbatim, so
+    this stage owns them, and both are installed from the file: repo on purpose
+    - the path a running board takes (`apt-get install/upgrade t2-utils`) is
+    what the build exercises, and the repo it reads ships in the image.
 
     `force` re-installs even when the stamp matches: the overlay stage prunes
-    the paths the package now owns, so a run that rebuilt the overlay (or the
-    packages under it) must put them back.
+    the paths the packages own, so a run that rebuilt the overlay must put them
+    back.
     """
-    version = package_version(prof)
-    want = f"{PACKAGE} {version} {tree_hash([PACKAGE_DIR])}"
+    utils = component_deb("utils", f"{PACKAGE}_*_all.deb")
+    initramfs = (args.out.resolve()
+                 / f"{INITRAMFS_PACKAGE}_{package_version(prof)}_all.deb")
     repo = stage / REPO_DIR.lstrip("/")
-    local = repo / f"{PACKAGE}_{version}_all.deb"
-    log(f"-- debs: build {PACKAGE} {version}, assemble {REPO_DIR}, apt install "
-        "--")
+    want = (f"{PACKAGE} {deb_version(utils)} {sha256_file(utils)} "
+            f"{INITRAMFS_PACKAGE} {package_version(prof)} {tree_hash([RAMDISK])}")
+    log(f"-- debs: assemble {REPO_DIR} from {utils.name} and "
+        f"{initramfs.name}, then apt install --")
     if args.backend == "none":
         log("  [skip] backend none: cannot install in the chroot")
-        LAST["debs"] = {"package": PACKAGE, "version": version,
-                        "installed": False}
+        LAST["debs"] = {"installed": False}
         return False
     if R.dry:
-        log(f"  [dry] would build {PACKAGE}_{version}_all.deb and install it "
-            f"from {REPO_DIR}")
+        log(f"  [dry] would build {initramfs.name} and install {PACKAGE} and "
+            f"{INITRAMFS_PACKAGE} from {REPO_DIR}")
         return False
-    if not force and stamp_read(stage, "debs") == want and local.is_file() \
-            and (stage / "var/lib/dpkg/info" / f"{PACKAGE}.list").is_file():
+    if not force and stamp_read(stage, "debs") == want \
+            and (stage / "var/lib/dpkg/info" / f"{PACKAGE}.list").is_file() \
+            and (stage / "var/lib/dpkg/info"
+                 / f"{INITRAMFS_PACKAGE}.list").is_file():
         log(f"  [skip] debs: unchanged "
             f"({short(stamp_path(stage, 'debs'))})")
-        LAST["debs"] = deb_facts(local, version)
+        LAST["debs"] = deb_facts([repo / utils.name, repo / initramfs.name])
         return False
 
-    deb = args.out.resolve() / "repo" / f"{PACKAGE}_{version}_all.deb"
-    deb.parent.mkdir(parents=True, exist_ok=True)
-    R.run([str(PACKAGE_DIR / "build.sh"), version, str(deb)])
-    local = write_repo(stage, deb)
-    log(f"  {short(local)} ({local.stat().st_size:,} B)")
-    LAST["debs"] = deb_facts(local, version)
+    initramfs.parent.mkdir(parents=True, exist_ok=True)
+    R.run([str(SCRIPTS / "initramfs" / "package.sh"),
+           package_version(prof), str(initramfs)])
+    local = write_repo(stage, [utils, initramfs])
+    for deb in local:
+        log(f"  {short(deb)} ({deb.stat().st_size:,} B)")
+    LAST["debs"] = deb_facts(local)
 
     # Install with NO /etc/resolv.conf bind: the source is file:, so apt needs
     # no DNS, and the package ships /etc/resolv.conf itself - dpkg cannot
@@ -1240,10 +1269,16 @@ def stage_debs(args, R: Runner, prof: Profile, stage: Path, ch: Chroot,
                 "-o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 "
                 "-o Acquire::Languages=none")
     inst.run(R, "set -e\napt-get update " + apt_opts)
-    # --reinstall, so a rebuilt .deb with the same version still lands
-    inst.run(R, f"set -e\napt-get install -y --reinstall {PACKAGE}")
-    if not (stage / "var/lib/dpkg/info" / f"{PACKAGE}.list").is_file():
-        die(f"{PACKAGE} was not installed into the stage")
+    # --reinstall, so a rebuilt .deb with the same version still lands, and
+    # --allow-downgrades, because the image's repo now carries the version the
+    # component repository publishes (0.1.0) while a warm stage may hold an
+    # older one built here (it used to be the profile's base release).  The
+    # pinned .deb is the intent; apt must not refuse it.
+    inst.run(R, f"set -e\napt-get install -y --reinstall --allow-downgrades "
+                f"{PACKAGE} {INITRAMFS_PACKAGE}")
+    for name in (PACKAGE, INITRAMFS_PACKAGE):
+        if not (stage / "var/lib/dpkg/info" / f"{name}.list").is_file():
+            die(f"{name} was not installed into the stage")
     stamp_write(stage, "debs", want)
     return True
 
@@ -1285,16 +1320,20 @@ def stage_hooks(args, R: Runner, prof: Profile, ch: Chroot,
 # --------------------------------------------------------------------------
 # stage: modules
 # --------------------------------------------------------------------------
-def kernel_release(args, R: Runner, tree: Path, env: dict) -> str:
-    out = R.run(["make", "-s", "-C", str(tree), "ARCH=arm64", "kernelrelease"],
-                env=env, capture=True)
-    return out.stdout.strip() if out else ""
+# The kernel Image the components step staged: the modules cross-check reads the
+# version string baked into it.
+STAGED_IMAGE = ROOT / "build" / "out" / "Image"
 
 
-def image_kernel_version(tree: Path) -> str:
-    """The 'Linux version ...' string baked into the built Image, if any."""
-    image = tree / "arch/arm64/boot/Image"
-    if not image.exists():
+def image_kernel_version(image: Path) -> str:
+    """The 'Linux version ...' string baked into a built Image, if any.
+
+    The kernel is built in another repository now, so this takes the Image file
+    itself rather than a kernel tree.  It is how the driver proves that the
+    kernel the FIT boots and the modules in the image are one build - the two
+    artefacts are pinned separately in components.lock, so they can drift.
+    """
+    if not image.is_file():
         return ""
     out = subprocess.run(["strings", "-a", str(image)], capture_output=True,
                          text=True).stdout
@@ -1302,126 +1341,141 @@ def image_kernel_version(tree: Path) -> str:
     return m.group(1) if m else ""
 
 
-def stage_modules(args, R: Runner, stage: Path) -> bool:
-    """Ship the FIT kernel's modules in the image (host-side cross build).
+def deb_field(deb: Path, field: str) -> str:
+    """A field of a built .deb's control, e.g. Version or Package."""
+    return subprocess.run(["dpkg-deb", "-f", str(deb), field],
+                          capture_output=True, text=True,
+                          check=True).stdout.strip()
 
-    Runs on the host, never in the chroot: `make` here is the cross compiler,
-    and `modules_install` only copies files plus `depmod -b <stage>`, which is
-    architecture agnostic.  The release has to equal the FIT kernel's, or the
-    board silently autoloads nothing.
 
-    Skipped when the kernel config, release and built .ko hash match and the
-    stage still carries the installed modules; a re-extracted base drops the
-    stamp with the tree, so this runs again.
+def deb_module_release(deb: Path) -> str:
+    """The kernel release a linux-modules package installs.
+
+    Read from the package's own file list rather than parsed out of its name:
+    /lib/modules/<rel> is what the directory has to be called, and the file
+    list is the only place that says so without guessing.
     """
-    log("-- modules: FIT kernel modules -> stage --")
+    out = subprocess.run(["dpkg-deb", "-c", str(deb)], capture_output=True,
+                         text=True, check=True).stdout
+    # One entry per line; the last field is the path (or "-> target" for a
+    # symlink, which cannot be a /lib/modules/<rel> path and is skipped).  Split
+    # on "/" rather than matching a regex: a character class that allows a
+    # newline happily runs into the next listing line.
+    rels = set()
+    for line in out.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        path = fields[-1]
+        parts = path.split("/")
+        if len(parts) > 3 and parts[:3] == [".", "lib", "modules"] and parts[3]:
+            rels.add(parts[3])
+    rels = sorted(rels)
+    if len(rels) != 1:
+        die(f"{deb.name} installs modules for {rels}: the image needs exactly "
+            "one kernel release")
+    return rels[0]
+
+
+def stage_modules(args, R: Runner, ch: Chroot, stage: Path) -> bool:
+    """Install the kernel's module package into the image.
+
+    The modules arrive as the Debian package zspace-t2-kernel publishes
+    (linux-modules-<rel>-t2), pinned by components.lock, so the image ships the
+    module tree that matches the kernel the FIT boots - and dpkg on the board
+    knows about it, which is what an upgrade needs.  The cross-check stays
+    because the two artefacts are pinned separately: a FIT booting a kernel
+    whose modules are not in the image is a board with no storage and no NIC.
+
+    Skipped when the package hash matches and the stage still carries the
+    installed modules; a re-extracted base drops the stamp with the stage, so
+    this runs again.
+    """
+    log("-- modules: the kernel's module package -> stage --")
     if args.no_modules:
         log("  [skip] --no-modules")
         return False
-    tree = args.kernel_tree.resolve()
-    if R.dry:
-        R.run(["make", "-s", "-C", str(tree), "ARCH=arm64", "kernelrelease"],
-              env=build_env())
-        R.run(["make", "-C", str(tree), f"-j{args.jobs}", "ARCH=arm64",
-               "modules"], env=build_env())
-        R.run(["make", "-C", str(tree), "ARCH=arm64",
-               f"INSTALL_MOD_PATH={stage}", "modules_install"],
-              env=build_env())
-        return False
-    if not (tree / ".config").exists():
-        die(f"{tree}/.config is missing: no kernel to take modules from")
-    env = build_env()             # t2-build.py's cross environment
-    rel = kernel_release(args, R, tree, env)
-    if not rel:
-        die(f"could not read the kernel release of {tree}")
-    baked = image_kernel_version(tree)
+    deb = component_deb("kernel", "linux-modules-*_arm64.deb")
+    package = deb_field(deb, "Package")
+    image_deb = component_deb("kernel", "linux-image-*_arm64.deb")
+    image_package = deb_field(image_deb, "Package")
+    rel = deb_module_release(deb)
+    baked = image_kernel_version(STAGED_IMAGE)
     if baked and baked != rel:
-        die(f"{tree} is inconsistent: kernelrelease {rel} but the built Image "
-            f"says {baked}; the FIT would boot a different kernel than the "
-            "modules in the image")
-    want = modules_stamp(tree, rel)
+        die(f"{deb.name} ships modules for {rel} but {STAGED_IMAGE.name} says "
+            f"{baked}: the FIT would boot a different kernel than the modules "
+            "in the image (both come from build/components/kernel - check "
+            "components.lock)")
+    want = (f"{image_package} {deb_version(image_deb)} {sha256_file(image_deb)} "
+            f"{package} {deb_version(deb)} {sha256_file(deb)} {baked}")
     dep = stage / "lib/modules" / rel / "modules.dep"
-    if stamp_read(stage, "modules") == want and dep.is_file():
+    if args.backend == "none":
+        log("  [skip] backend none: cannot install in the chroot")
+        LAST["modules"] = {}
+        return False
+    if R.dry:
+        log(f"  [dry] would install {image_deb.name} and {deb.name} into the "
+            "stage")
+        return False
+    if stamp_read(stage, "modules") == want and dep.is_file() \
+            and (stage / "var/lib/dpkg/info" / f"{package}.list").is_file() \
+            and (stage / "var/lib/dpkg/info"
+                 / f"{image_package}.list").is_file():
         log(f"  [skip] modules: unchanged "
             f"({short(stamp_path(stage, 'modules'))})")
-        LAST["modules"] = module_facts_from_stage(args, stage)
+        LAST["modules"] = module_facts_from_stage(stage)
         return False
-    log(f"  kernel {rel} (tree {tree})")
-    # Plain `make modules` leaves the .ko scattered across the tree; only
-    # `modules_install INSTALL_MOD_PATH=...` creates lib/modules/<rel>/.
-    # So the rebuild check has to look for them where they actually are.
-    # Never skip this because .ko files exist: kbuild only knows a module is
-    # current from its per-module config dependency files, and a .config edit
-    # (t2-build.py --trim-config) must rebuild every module that depends on
-    # what changed.  `make modules` is a fast no-op when the tree is current,
-    # so the existence check can only ever ship stale modules.
-    n_ko = sum(1 for _ in tree.rglob("*.ko") if _.is_file())
-    log(f"  {n_ko} .ko in the tree; running `make modules` to bring them to "
-        "the current .config")
-    R.run(["make", "-C", str(tree), "ARCH=arm64", "olddefconfig"], env=env)
-    # .config and include/config/auto.conf drift apart after an out-of-tree
-    # edit (t2-build.py --trim-config), and kbuild then falls into
-    # conf --oldconfig and blocks on a prompt.  Sync here, where olddefconfig
-    # is non-interactive, then re-assert the curated lists: a build that
-    # quietly lost a load-bearing symbol is worse than a build that stops.
-    bad = T2B.config_problems()
-    if bad:
-        die(f"{tree}/.config no longer matches the curated lists: "
-            + "; ".join(bad))
-    R.run(["make", "-C", str(tree), f"-j{args.jobs}", "ARCH=arm64",
-           "modules"], env=env)
-    # Modules carry DWARF (CONFIG_DEBUG_INFO) that the Image never does: the
-    # 1,591-module set is ~349 MB apparent of the 6 GiB rootfs, and stripping
-    # takes it to ~60-90 MB [INFERENCE] before MODULE_COMPRESS_ZSTD cuts it
-    # further.  Strip in the tree rather than the stage: modules_install
-    # compresses on the way in, so stripping afterwards means unpacking the
-    # .ko.zst again.  These are aarch64 objects, so the host `strip` cannot
-    # read them - it fails with "Unable to recognise the format", so the
-    # cross binutils are required.
-    # The cross binutils are not on the host PATH: build_env() prepends
-    # tools/cross/root/usr/bin, which is where aarch64-linux-gnu-strip lives.
-    strip = shutil.which("aarch64-linux-gnu-strip", path=env["PATH"])
-    if not strip:
-        die("aarch64-linux-gnu-strip is missing: stripping module DWARF needs "
-            "the cross binutils, not the host strip")
-    R.run(["find", str(tree), "-name", "*.ko", "-exec", strip,
-           "--strip-debug", "{}", "+"], env=env)
-    # modules_install never deletes: stale .ko for this release would survive
-    # (the previous 1,591-module set is ~349 MB apparent), so clear the target
-    # release dir first.  Only this release's dir - the base rootfs's own
-    # kernel modules live under a different <rel>.
-    target = stage / "lib/modules" / rel
-    if target.exists():
-        R.run(["rm", "-rf", str(target)], env=env)
-    R.run(["make", "-C", str(tree), "ARCH=arm64",
-           f"INSTALL_MOD_PATH={stage}", "modules_install"], env=env)
-    dep = stage / "lib/modules" / rel / "modules.dep"
+    log(f"  {deb.name} + {image_deb.name} -> /lib/modules/{rel}")
+    # The image boots exactly one kernel, so it carries exactly one module tree:
+    # drop every other release.  A stage reused from before the split carries
+    # the release the old build installed with `make modules_install`, which
+    # dpkg knows nothing about and would otherwise stay behind - and the verify
+    # stage refuses an image with modules for more than one kernel.
+    moddir = stage / "lib/modules"
+    if moddir.is_dir():
+        for stale in sorted(p for p in moddir.iterdir() if p.is_dir()):
+            if stale.name != rel:
+                log(f"  removing the module tree for {stale.name}")
+                shutil.rmtree(stale)
+    # Install through the chroot so dpkg records the files: the board then sees
+    # installed packages rather than a tree somebody copied in.  Both go in one
+    # transaction because linux-modules Depends on the matching linux-image
+    # (Ubuntu's convention): a modules-only install fails the dependency and
+    # leaves dpkg's state broken.  The image package puts /boot/Image and the
+    # board DTB in the rootfs, which is what an on-board kernel upgrade
+    # assembles the boot FIT from.  Neither .deb stays in the image.
+    tmp = stage / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    names = []
+    for source in (image_deb, deb):
+        dest = tmp / source.name
+        shutil.copy2(source, dest)
+        names.append(dest)
+    inst = Chroot(args.backend, stage, [], CHROOT_ENV,
+                  proot=ch.proot, qemu=ch.qemu)
+    inst.run(R, "set -e\ndpkg -i " + " ".join(f"/tmp/{n.name}" for n in names))
+    for path in names:
+        path.unlink(missing_ok=True)
+    for name in (package, image_package):
+        if not (stage / "var/lib/dpkg/info" / f"{name}.list").is_file():
+            die(f"{name} was not installed into the stage")
     if not dep.is_file() or not dep.stat().st_size:
-        die(f"{dep} is missing or empty after modules_install")
-    git = subprocess.run(["git", "-C", str(tree), "describe", "--tags",
-                          "--always", "--dirty"], capture_output=True,
-                         text=True).stdout.strip()
-    # MODULE_COMPRESS_ZSTD installs *.ko.zst, so count either spelling
-    ko = sum(1 for p in (stage / "lib/modules" / rel).rglob("*")
-             if p.is_file() and (p.name.endswith(".ko")
-                                 or p.name.endswith(".ko.zst")))
-    log(f"  installed {ko} modules for {rel} ({git})")
-    # Computed *after* the strip above: the stage strips the .ko in the tree,
-    # so a hash taken before it would never match the next run's pre-check.
-    stamp_write(stage, "modules", modules_stamp(tree, rel))
-    LAST["modules"] = {"tree": str(tree), "release": rel, "git": git,
-                       "image_version_string": baked or None,
-                       "config_sha256": sha256_file(tree / ".config"),
-                       "modules": ko, "modules_dep_sha256": sha256_file(dep)}
+        die(f"{dep} is missing or empty after installing {deb.name}")
+    # The stamp goes last: written before the facts are read, a run that failed
+    # the cross-check would leave a valid stamp behind and the next run would
+    # skip straight back into the same failure.
+    LAST["modules"] = module_facts_from_stage(stage)
+    stamp_write(stage, "modules", want)
     return True
 
 
-def module_facts_from_stage(args, stage: Path) -> dict:
+def module_facts_from_stage(stage: Path) -> dict:
     """Recover the module facts when verify runs without the modules stage.
 
-    --stages verify has to still prove the modules, so the release is taken
-    from what the stage actually carries and cross-checked against the
-    kernel tree's kernelrelease.
+    --stages verify still has to prove the modules, so the release comes from
+    what the stage actually carries, cross-checked against the version baked
+    into the kernel Image the components step staged: those two artefacts are
+    pinned separately in components.lock, so this is the check that they agree.
     """
     moddir = stage / "lib/modules"
     rels = sorted(p.name for p in moddir.iterdir() if p.is_dir()) \
@@ -1432,22 +1486,20 @@ def module_facts_from_stage(args, stage: Path) -> dict:
         die(f"{moddir} holds several kernel releases {rels}; the image would "
             "ship modules for more than one kernel")
     rel = rels[0]
-    tree = args.kernel_tree.resolve()
-    want = kernel_release(args, Runner(True), tree, build_env()) \
-        if (tree / "Makefile").exists() else ""
-    if want and want != rel:
-        die(f"stage ships modules for {rel} but {tree} is {want}: the FIT "
-            "kernel and the image's modules must be the same build")
+    baked = image_kernel_version(STAGED_IMAGE)
+    if baked and baked != rel:
+        die(f"the stage ships modules for {rel} but the kernel Image is "
+            f"{baked}: the FIT kernel and the image's modules must be the same "
+            "build")
     dep = moddir / rel / "modules.dep"
-    log(f"  modules in the stage: {rel} "
-        f"({sum(1 for p in (moddir / rel).rglob('*') if p.is_file() and (p.name.endswith('.ko') or p.name.endswith('.ko.zst')))} .ko)")
-    return {"tree": str(tree), "release": rel,
-            "git": subprocess.run(["git", "-C", str(tree), "describe", "--tags",
-                                   "--always", "--dirty"], capture_output=True,
-                                  text=True).stdout.strip(),
-            "modules": sum(1 for p in (moddir / rel).rglob("*")
-                           if p.is_file() and (p.name.endswith(".ko")
-                                               or p.name.endswith(".ko.zst"))),
+    n_ko = sum(1 for p in (moddir / rel).rglob("*")
+               if p.is_file() and (p.name.endswith(".ko")
+                                   or p.name.endswith(".ko.zst")))
+    log(f"  modules in the stage: {rel} ({n_ko} .ko)")
+    return {"release": rel, "image_version_string": baked or None,
+            "kernel_deb": component_deb("kernel",
+                                        "linux-modules-*_arm64.deb").name,
+            "modules": n_ko,
             "modules_dep_sha256": sha256_file(dep) if dep.is_file() else None}
 
 # --------------------------------------------------------------------------
@@ -1608,8 +1660,9 @@ def verify_fit(prof: Profile, fit_path: Path | None = None) -> dict | None:
     while the DTS said `root=LABEL=zspace-rootfs`.  So the FIT is read the way
     U-Boot would:
 
-      * `/images/fdt` must be byte-identical to the profile's DTB,
-      * `/images/kernel` must be byte-identical to that tree's `Image`,
+      * `/images/fdt` must be byte-identical to the staged board DTB,
+      * `/images/kernel` must be byte-identical to the staged kernel Image,
+      * `/images/ramdisk` must be the packed initramfs, and
       * `chosen/bootargs` must select the root by the profile's label.
 
     `fit_path` overrides the artifact path (used by
@@ -1620,16 +1673,17 @@ def verify_fit(prof: Profile, fit_path: Path | None = None) -> dict | None:
         log('  [skip] profile declares no "fit" block (distro/README.md)')
         return None
     path = fit_path or (ROOT / spec["artifact"])
-    tree = ROOT / spec.get("tree", str(DEFAULT_KERNEL_TREE.relative_to(ROOT)))
-    kernel = tree / spec.get("kernel", "arch/arm64/boot/Image")
-    dtb = tree / spec.get("dtb", "arch/arm64/boot/dts/rockchip/rk3568-t2.dtb")
+    kernel = ROOT / spec.get("kernel", "build/out/Image")
+    dtb = ROOT / spec.get("dtb", "build/out/rk3568-t2.dtb")
+    ramdisk = ROOT / spec.get("ramdisk", "build/initramfs.gz")
     label = prof.label
     checks: list = []
     summary = {"artifact": str(path), "label": label}
 
     if not path.is_file():
         checks.append((f"FIT {path.name} exists", False,
-                       f"{path} is missing - build it with scripts/rk-fit.py"))
+                       f"{path} is missing - images/build-installer.sh builds "
+                       "it with t2-mkfit (from the t2-utils package)"))
         return {"checks": checks, "summary": summary}
 
     data = path.read_bytes()
@@ -1660,8 +1714,7 @@ def verify_fit(prof: Profile, fit_path: Path | None = None) -> dict | None:
         label_txt = f"FIT {name} == {src.relative_to(ROOT)}"
         if not src.is_file():
             checks.append((label_txt, False,
-                           f"{src} is missing - build the kernel tree "
-                           f"(scripts/t2-build.py)"))
+                           f"{src} is missing - build the kernel tree"))
             continue
         want = src.read_bytes()
         same = got == want
@@ -1670,8 +1723,26 @@ def verify_fit(prof: Profile, fit_path: Path | None = None) -> dict | None:
                   f"{len(want):,} B sha256 "
                   f"{hashlib.sha256(want).hexdigest()[:16]}")
         if not same:
-            detail += " - the FIT is stale: rebuild it with scripts/rk-fit.py"
+            detail += (" - the FIT is stale: rebuild it with "
+                       "images/build-installer.sh (t2-mkfit)")
         checks.append((label_txt, same, detail))
+
+    # The initramfs rides in the FIT as its ramdisk.  t2-mkfit stores it
+    # uncompressed because this U-Boot does not decompress a FIT ramdisk, so the
+    # comparison is against the packed file's contents, not its own bytes.
+    rblob = blob("ramdisk")
+    if rblob is None:
+        checks.append((f"FIT {path.name} carries a ramdisk", False,
+                       f"nodes: {sorted(nodes.get('/images', {}))}"))
+    elif not ramdisk.is_file():
+        checks.append((f"FIT ramdisk == {ramdisk.relative_to(ROOT)}", False,
+                       f"{ramdisk} is missing - run rootfs/initramfs/build.sh"))
+    else:
+        want = gzip.decompress(ramdisk.read_bytes())
+        checks.append((f"FIT ramdisk == {ramdisk.relative_to(ROOT)}",
+                       rblob == want,
+                       f"fit ramdisk {len(rblob):,} B; {ramdisk.name} unpacks "
+                       f"to {len(want):,} B"))
 
     # bootargs live in the *embedded* DTB, not in the FIT structure itself:
     # parse /images/fdt as its own FDT and read its /chosen node.
@@ -2121,9 +2192,6 @@ def main() -> int:
                     help="fetched qemu/proot (default: build/rootfs-tools)")
     ap.add_argument("--rootfs-size", default=None,
                     help="image size in bytes (default: image.json size)")
-    ap.add_argument("--kernel-tree", type=Path, default=DEFAULT_KERNEL_TREE,
-                    help="kernel tree to take modules from (default: "
-                         "build/kernel, written by kernel/fetch.sh)")
     ap.add_argument("--no-modules", action="store_true",
                     help="do not ship the FIT kernel's modules in the image")
     ap.add_argument("--no-fit-check", action="store_true",
@@ -2192,7 +2260,7 @@ def main() -> int:
     log(f"  stages : {' '.join(order)}")
     img = out / prof.artifact
     if "verify" in order and "modules" not in order and not args.no_modules:
-        LAST["modules"] = module_facts_from_stage(args, stage)
+        LAST["modules"] = module_facts_from_stage(stage)
         if not LAST["modules"]:
             die(f"{stage}/lib/modules is empty but the run needs it to verify: "
                 "run the modules stage first (or pass --no-modules)")
@@ -2226,7 +2294,7 @@ def main() -> int:
     if on("hooks"):
         ran = stage_hooks(args, R, prof, hook_ch, force=ran) or ran
     if on("modules"):
-        ran = stage_modules(args, R, stage) or ran
+        ran = stage_modules(args, R, ch, stage) or ran
     if on("image"):
         img = stage_image(args, R, prof, stage, out, size)
     verification = ({} if args.dry_run or not on("verify")

@@ -8,13 +8,15 @@ paths from its own location, so it runs from any clone path.
 
 | File | Purpose |
 |---|---|
-| `rk-fit.py` | pack the kernel `Image` and the board DTB into a vendor-compatible Rockchip FIT (U-Boot 2017.09 reads `data-position`, not `data-offset`) |
 | `t2-boot-fat.py` | build the FAT boot tree mainline U-Boot's bootstd reads: `/Image`, the DTB, `/extlinux/extlinux.conf`, `/uboot.env`, `/Image.old` — either as a `boot.vfat` image or as files (`--out-dir`) for the card's config FAT |
 | `t2-image.py` | assemble a whole-disk image: GPT at the vendor's eMMC offsets, the loader, the FIT and the rootfs, plus the optional `T2-CONFIG` FAT and `T2-FLASH` ext4 partitions |
 | `build-installer.sh` | run the whole installer-card build end to end (the entry point) |
 
-`t2-image.py` and `rk-fit.py` import `lib/rkimg.py`, the shared Rockchip parser
-module at the repository root.
+The kernel FIT is packed by `t2-mkfit`, which ships in the t2-utils package
+(`zspace-t2-ubuntu-utils`) and is unpacked from the fetched .deb into
+`build/components/utils/unpacked/`.  One implementation assembles the FIT for
+both the image build and an on-board kernel upgrade.  `t2-image.py` imports
+`lib/rkimg.py`, the shared Rockchip parser module at the repository root.
 
 ## Installer card layout
 
@@ -47,11 +49,13 @@ Requirements: `python3`, `mtools`, `mke2fs`/`debugfs`, `blkid`, `dtc`
 (`device-tree-compiler` or `$DTC`), and a POSIX shell.
 
 ```sh
-kernel/fetch.sh && kernel/build.sh    # -> build/out/Image, rk3568-t2.dtb
-u-boot/fetch.sh && u-boot/build.sh    # -> build/out/u-boot.itb, idbloader.img
-rootfs/fetch.sh && rootfs/build.sh    # -> build/out/rootfs.ext4.zst
-images/build-installer.sh             # -> build/out/installer.img
+./build-all.sh                         # all five steps -> build/out/installer.img
 ```
+
+`build-all.sh` fetches and sha256-verifies the component artefacts
+(`components.lock`), verifies the committed WiFi/BT firmware, packs the
+initramfs, builds the rootfs and then assembles the card image.  The kernel and
+U-Boot are built by their own repositories, not here.
 
 Then write the card:
 
@@ -66,8 +70,8 @@ dd if=build/out/installer.img of=/dev/sdX bs=4M conv=sparse
 A normal SD card that boots the rootfs on the card itself (no installer):
 
 ```sh
-images/t2-boot-fat.py --image build/out/Image --dtb build/out/rk3568-t2.dtb \
-    --out build/out/boot.vfat
+images/t2-boot-fat.py --image build/out/t2-mainline-boot.img \
+    --dtb build/out/rk3568-t2.dtb --out build/out/boot.vfat
 images/t2-image.py --out build/out/t2-base-sd.img --size 3.6G \
     --rootfs build/out/rootfs.ext4 \
     --boot-dir <boot tree dir> --config-size 256M

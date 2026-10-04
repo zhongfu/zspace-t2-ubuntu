@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
 #
-# Build every artefact, in the order docs/building.md documents.
+# Build every artefact of this repository, in the order docs/building.md
+# documents.
 #
-#   1  rootfs/fetch.sh            verify the committed WiFi/BT firmware
-#   2  rootfs/initramfs/build.sh  -> build/initramfs
-#   3  kernel/fetch.sh            -> build/kernel
-#   4  kernel/build.sh            -> build/out/Image, rk3568-t2.dtb, modules/
-#   5  u-boot/fetch.sh            -> build/uboot, build/rkbin
-#   6  u-boot/build.sh            -> build/out/u-boot.itb, idbloader.img, ...
-#   7  rootfs/build.sh            -> build/out/rootfs.ext4.zst
-#   8  images/build-installer.sh  -> build/out/installer.img
+#   1  tools/components.py fetch  verify the pinned components, stage the raw files
+#   2  rootfs/fetch.sh            verify the committed WiFi/BT firmware
+#   3  rootfs/initramfs/build.sh  -> build/initramfs, build/initramfs.gz
+#   4  rootfs/build.sh            -> build/out/rootfs.ext4.zst
+#   5  images/build-installer.sh  -> build/out/installer.img
 #
-# Re-runnable: step 3 is skipped when build/kernel already exists (kernel/fetch.sh
-# refuses to clobber a tree) and step 5 skips a tree that is there.
+# This repository does not build the kernel, U-Boot or t2-utils.  Those live in
+# zspace-t2-kernel, zspace-t2-bootloader and zspace-t2-ubuntu-utils, and step 1
+# fetches the exact artefacts components.lock pins, sha256-verified: a component
+# that does not match the lock stops the build here rather than producing an
+# image that silently mixes versions.  Step 1 also stages the raw kernel and
+# boot-chain files into build/out/, so the rootfs and installer steps keep
+# reading every input from one directory.
 #
-# Steps 2, 4, 6, 7 and 8 also record a stamp of their inputs under build/.stamps/:
-# a rerun whose inputs hash the same prints "[skip] ..." and rebuilds nothing.
-# Step 2's inputs are rootfs/initramfs/ (its output is embedded in the kernel
-# Image, so it must not be left stale); step 7's are the profile tree, the
-# userspace package source (rootfs/packages/), the firmware trees, the kernel
-# artefacts (build/out/Image, rk3568-t2.dtb, modules/) and the scripts it
-# invokes; step 8's are the five artefacts, the boot-tree tools and the config
-# template.
+# Re-runnable: steps 3, 4 and 5 record a stamp of their inputs under
+# build/.stamps/ and print "[skip] ..." when a rerun hashes the same.  Step 3's
+# inputs are rootfs/initramfs/ (its packed output is the boot FIT's ramdisk);
+# step 4's are the profile tree, the fetched component artefacts and the
+# firmware trees; step 5's are the staged artefacts, the boot-tree tools and the
+# config template.
 #
 # Steps can be selected: --only, --skip, --from, --to, --list.  For example,
-# `--only 6,8` rebuilds U-Boot and the installer image only.
+# `--only 5` rebuilds the installer image only.
 #
-# Step 1 verifies the vendor WiFi/BT firmware committed in
-# rootfs/firmware/brcm/ and writes the mainline names; it needs no network.
-# This script reports a missing blob instead of guessing.
+# Step 2 verifies the vendor WiFi/BT firmware committed in rootfs/firmware/brcm/
+# and writes the mainline names; it needs no network.  Step 4 runs it too, so a
+# step-4-only run is covered.  This script reports a missing blob instead of
+# guessing.
 #
 # Usage: build-all.sh [--only N[,N] | --skip N | --from N | --to N] [-h|--help|--list]
 set -eu
@@ -46,7 +48,7 @@ Usage: $(basename "$0") [options]
 Build the ZSpace T2 artefacts in order (see docs/building.md).
 
 Options:
-  --only N[,N]   run only these steps (1..8); leave the rest alone
+  --only N[,N]   run only these steps (1..5); leave the rest alone
   --skip N[,N]   do not run these steps
   --from N       start at step N (inclusive)
   --to N         stop after step N (inclusive)
@@ -54,34 +56,30 @@ Options:
   -h, --help     show this help
 
 Steps:
-  1  vendor firmware      rootfs/fetch.sh (verifies the committed blobs)
-  2  initramfs            rootfs/initramfs/build.sh    (stamped)
-  3  kernel tree          kernel/fetch.sh
-  4  kernel               kernel/build.sh              (stamped)
-  5  u-boot sources       u-boot/fetch.sh
-  6  u-boot               u-boot/build.sh              (stamped)
-  7  rootfs               rootfs/build.sh              (stamped)
-  8  installer image      images/build-installer.sh    (stamped)
+  1  components           tools/components.py fetch     (sha256-verified)
+  2  vendor firmware      rootfs/fetch.sh               (verifies the committed blobs)
+  3  initramfs            rootfs/initramfs/build.sh     (stamped)
+  4  rootfs               rootfs/build.sh               (stamped)
+  5  installer image      images/build-installer.sh     (stamped)
 
-Steps 3 and 5 are skipped when their output tree is already there; steps 2, 4,
-6, 7 and 8 are skipped when the sha256 of their inputs matches the stamp under
-build/.stamps/.
+Steps 3, 4 and 5 are skipped when the sha256 of their inputs matches the stamp
+under build/.stamps/.
 
 Environment:
-  JOBS   build parallelism (default: \$(nproc))
+  JOBS                   build parallelism (default: \$(nproc))
+  T2_COMPONENTS_DIR      take the component artefacts from this directory
+                         instead of the component releases (offline builds)
+  T2_COMPONENTS_ORG      GitHub org owning the component repositories
 EOF
 }
 
 list_steps() {
     cat <<EOF
-1  vendor firmware      rootfs/fetch.sh
-2  initramfs            rootfs/initramfs/build.sh
-3  kernel tree          kernel/fetch.sh
-4  kernel               kernel/build.sh
-5  u-boot sources       u-boot/fetch.sh
-6  u-boot               u-boot/build.sh
-7  rootfs               rootfs/build.sh
-8  installer image      images/build-installer.sh
+1  components           tools/components.py fetch
+2  vendor firmware      rootfs/fetch.sh
+3  initramfs            rootfs/initramfs/build.sh
+4  rootfs               rootfs/build.sh
+5  installer image      images/build-installer.sh
 EOF
 }
 
@@ -122,8 +120,8 @@ check_list() { # option value
     local n
     for n in ${2//,/ }; do
         case "$n" in
-        [1-8]) ;;
-        *) echo "build-all: $1 '$n' is not a step number (1..8)" >&2; exit 2 ;;
+        [1-5]) ;;
+        *) echo "build-all: $1 '$n' is not a step number (1..5)" >&2; exit 2 ;;
         esac
     done
 }
@@ -193,7 +191,7 @@ stamp_skip() {
     local stamp=$stamp_dir/$name
     if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ] \
             && outputs_exist "$@"; then
-        echo "[skip] $n/8 $label: unchanged ($stamp)"
+        echo "[skip] $n/5 $label: unchanged ($stamp)"
         return 0
     fi
     return 1
@@ -204,133 +202,115 @@ stamp_write() { # <stamp name> <hash>
     printf '%s\n' "$2" > "$stamp_dir/$1"
 }
 
+# stage <component> <file>... - copy a fetched component artefact into
+# build/out/, where the rootfs and installer steps read it.
+stage() {
+    local comp=$1
+    shift
+    local f
+    for f in "$@"; do
+        install -m 644 "build/components/$comp/$f" "build/out/$f"
+    done
+}
+
 selected=
-for n in 1 2 3 4 5 6 7 8; do
+for n in 1 2 3 4 5; do
     if wanted "$n"; then selected="$selected $n"; fi
 done
-echo "build-all: steps$selected (of 1..8)"
+echo "build-all: steps$selected (of 1..5)"
 
 export JOBS=${JOBS:-$(nproc)}
 
 if wanted 1; then
-    echo "== 1/8 vendor firmware =="
-    # Verifies the committed blobs and writes the brcmfmac driver-named copies
-    # that the initramfs (step 2) and hooks/50 read.  Offline and idempotent.
-    # rootfs/build.sh (step 7) runs it too, so a step-7-only run is covered.
-    rootfs/fetch.sh
+    echo "== 1/5 components =="
+    python3 tools/components.py fetch
+    # Stage the raw files the later steps read.  The kernel package and the
+    # bootloader package are the source of truth for these bytes; build/out/ is
+    # only where this build puts them so every step reads one directory.
+    stage kernel Image rk3568-t2.dtb
+    stage bootloader u-boot.itb idbloader.img u-boot-installer.itb \
+        idbloader-installer.img u-boot-initial-env u-boot-installer-initial-env
+    # Unpack the userspace package: t2-mkfit lives in it, and both the rootfs
+    # step (refreshing a stale FIT) and the installer step (packing it) need the
+    # tool on disk.  One unpack here beats two copies of the same logic.
+    utils_deb=$(ls build/components/utils/t2-utils_*.deb)
+    rm -rf build/components/utils/unpacked
+    mkdir -p build/components/utils/unpacked
+    dpkg-deb -x "$utils_deb" build/components/utils/unpacked
+    [ -x build/components/utils/unpacked/usr/bin/t2-mkfit ] || {
+        echo "build-all: $utils_deb carries no /usr/bin/t2-mkfit" >&2
+        exit 1
+    }
 else
-    echo "-- 1/8 vendor firmware: not selected"
+    echo "-- 1/5 components: not selected"
 fi
 
 if wanted 2; then
-    echo "== 2/8 initramfs =="
-    # Stamped, not presence-checked: build/initramfs is embedded in the kernel
-    # Image (step 4), so a changed init or installer.sh has to invalidate it.
-    # The presence check used to leave a stale tree in place, and step 4 then
-    # hashed that stale tree and skipped too.
-    s2=$(step_hash "initramfs" rootfs/initramfs)
-    if stamp_skip 2 initramfs step2-initramfs.sha256 "$s2" \
-            build/initramfs/init build/initramfs/installer.sh \
-            build/initramfs/bin/busybox; then
-        :
-    else
-        rootfs/initramfs/build.sh
-        stamp_write step2-initramfs.sha256 "$s2"
-    fi
+    echo "== 2/5 vendor firmware =="
+    rootfs/fetch.sh
 else
-    echo "-- 2/8 initramfs: not selected"
+    echo "-- 2/5 vendor firmware: not selected"
 fi
 
 if wanted 3; then
-    echo "== 3/8 kernel tree =="
-    if [ -d build/kernel ]; then
-        echo "  already present: build/kernel"
+    echo "== 3/5 initramfs =="
+    # Stamped, not presence-checked: the packed output is the boot FIT's ramdisk
+    # and the t2-initramfs package's payload, so a changed init or installer.sh
+    # has to invalidate it.
+    s3=$(step_hash "initramfs" rootfs/initramfs)
+    if stamp_skip 3 initramfs step3-initramfs.sha256 "$s3" \
+            build/initramfs/init build/initramfs/installer.sh \
+            build/initramfs/bin/busybox build/initramfs.gz; then
+        :
     else
-        kernel/fetch.sh
+        rootfs/initramfs/build.sh
+        stamp_write step3-initramfs.sha256 "$s3"
     fi
 else
-    echo "-- 3/8 kernel tree: not selected"
+    echo "-- 3/5 initramfs: not selected"
 fi
 
 if wanted 4; then
-    echo "== 4/8 kernel =="
-    s4=$(step_hash "kernel $(git -C build/kernel rev-parse HEAD 2>/dev/null || echo -)" \
-        kernel/build.sh kernel/fetch.sh kernel/config/kernel.config kernel/patches \
-        build/initramfs)
-    if stamp_skip 4 kernel step4-kernel.sha256 "$s4" \
-            build/out/Image build/out/rk3568-t2.dtb build/out/modules/lib/modules; then
-        :
-    else
-        kernel/build.sh
-        stamp_write step4-kernel.sha256 "$s4"
-    fi
-else
-    echo "-- 4/8 kernel: not selected"
-fi
-
-if wanted 5; then
-    echo "== 5/8 u-boot sources =="
-    u-boot/fetch.sh
-else
-    echo "-- 5/8 u-boot sources: not selected"
-fi
-
-if wanted 6; then
-    echo "== 6/8 u-boot =="
-    s6=$(step_hash "uboot $(git -C build/uboot rev-parse HEAD 2>/dev/null || echo -)" \
-        u-boot/build.sh u-boot/fetch.sh u-boot/configs u-boot/dts u-boot/patches \
-        u-boot/gen-installer-defconfig.py build/rkbin)
-    if stamp_skip 6 u-boot step6-uboot.sha256 "$s6" \
-            build/out/u-boot.itb build/out/idbloader.img \
-            build/out/u-boot-installer.itb build/out/idbloader-installer.img \
-            build/out/u-boot-initial-env build/out/u-boot-installer-initial-env; then
-        :
-    else
-        u-boot/build.sh
-        stamp_write step6-uboot.sha256 "$s6"
-    fi
-else
-    echo "-- 6/8 u-boot: not selected"
-fi
-
-if wanted 7; then
-    echo "== 7/8 rootfs =="
-    s7=$(step_hash "rootfs" \
-        rootfs/build.sh rootfs/fetch.sh rootfs/initramfs/build.sh rootfs/t2-distro.py \
-        rootfs/profiles/t2-base rootfs/packages rootfs/firmware \
-        rootfs/initramfs/firmware \
-        lib/t2-build.py lib/rkimg.py images/rk-fit.py \
-        build/out/Image build/out/rk3568-t2.dtb build/out/modules)
-    if stamp_skip 7 rootfs step7-rootfs.sha256 "$s7" \
+    echo "== 4/5 rootfs =="
+    # The component artefacts are inputs: the rootfs installs the fetched
+    # t2-utils package, the kernel's module package and the initramfs it packs
+    # here, so a component bump must rebuild the image.
+    s4=$(step_hash "rootfs" \
+        rootfs/build.sh rootfs/fetch.sh rootfs/initramfs/build.sh \
+        rootfs/initramfs/package.sh rootfs/t2-distro.py \
+        rootfs/profiles/t2-base rootfs/firmware rootfs/initramfs/firmware \
+        lib/t2lib.py lib/rkimg.py images/t2-boot-fat.py \
+        build/components build/initramfs.gz)
+    if stamp_skip 4 rootfs step4-rootfs.sha256 "$s4" \
             build/out/rootfs.ext4 build/out/rootfs.ext4.zst; then
         :
     else
         rootfs/build.sh
-        stamp_write step7-rootfs.sha256 "$s7"
+        stamp_write step4-rootfs.sha256 "$s4"
     fi
 else
-    echo "-- 7/8 rootfs: not selected"
+    echo "-- 4/5 rootfs: not selected"
 fi
 
-if wanted 8; then
-    echo "== 8/8 installer image =="
-    s8_inputs=(images/build-installer.sh images/rk-fit.py images/t2-boot-fat.py \
-        images/t2-image.py images/t2-install-card-config.example.txt \
+if wanted 5; then
+    echo "== 5/5 installer image =="
+    s5_inputs=(images/build-installer.sh images/t2-boot-fat.py images/t2-image.py \
+        images/t2-install-card-config.example.txt \
         build/out/Image build/out/rk3568-t2.dtb build/out/u-boot.itb \
-        build/out/idbloader.img build/out/rootfs.ext4.zst)
-    if [ -f build/out/Image.old ]; then s8_inputs+=(build/out/Image.old); fi
+        build/out/idbloader.img build/out/rootfs.ext4.zst build/initramfs.gz)
+    if [ -f build/out/Image.old ]; then s5_inputs+=(build/out/Image.old); fi
     if [ -f build/out/u-boot-initial-env ]; then
-        s8_inputs+=(build/out/u-boot-initial-env)
+        s5_inputs+=(build/out/u-boot-initial-env)
     fi
-    s8=$(step_hash "installer" "${s8_inputs[@]}")
-    if stamp_skip 8 installer step8-installer.sha256 "$s8" build/out/installer.img; then
+    s5=$(step_hash "installer" "${s5_inputs[@]}")
+    if stamp_skip 5 installer step5-installer.sha256 "$s5" build/out/installer.img; then
         :
     else
         images/build-installer.sh
-        stamp_write step8-installer.sha256 "$s8"
+        stamp_write step5-installer.sha256 "$s5"
     fi
 else
-    echo "-- 8/8 installer image: not selected"
+    echo "-- 5/5 installer image: not selected"
 fi
 
 echo

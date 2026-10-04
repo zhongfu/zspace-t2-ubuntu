@@ -4,7 +4,7 @@
 #
 #   ./docker-build.sh                # the whole build -> build/out/installer.img
 #   ./docker-build.sh bash           # a shell in the same environment
-#   ./docker-build.sh kernel/build.sh # one step, same environment
+#   ./docker-build.sh ./build-all.sh --only 4  # one step, same environment
 #
 # The repository is bind-mounted at /work and the container runs with your uid
 # and gid, so everything it writes into build/ stays yours.  The image is built

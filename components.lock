@@ -1,0 +1,40 @@
+{
+  "_comment": "Component artefacts this image builds against. Regenerate with tools/components.py lock; fetch and verify with tools/components.py fetch.",
+  "components": {
+    "bootloader": {
+      "artifacts": {
+        "idbloader-installer.img": "90773af6a858d9b803d0b3e0a40809462334a249d62905e88f281809884de15f",
+        "idbloader.img": "2321074b8a2795329efe0955e261960715b4e8996c03c8efff9eb014e875f74f",
+        "t2-bootloader_2026.07+git4.gb98b499-1_arm64.deb": "3d1f98ee650186998f8be384ae809b2a5b18cb9ad9a3d1ba90dd132e9d11ae1f",
+        "u-boot-initial-env": "e0e9498e621adfed12748ea4ece691745e0a55e230b22e6c99a881eb894ce58b",
+        "u-boot-installer-initial-env": "807d0b9e03ec7afce522eba1dc0795c1affd48f46386effdcb1fc9a7ba1472c6",
+        "u-boot-installer.itb": "a93d8e81a42c2a583b5bed3f44aecbfd1095c7dc9c3fa160c3a942f9bc6b2b6f",
+        "u-boot.itb": "d3aefe9e0be353b71d89618bf7076ba594aea6bdcfb1afc58248413bf4ba612f"
+      },
+      "commit": "b98b499e45693a3c13807a61aa8b9edfd9bbd17a",
+      "repo": "zspace-t2-bootloader",
+      "tag": "v2026.07"
+    },
+    "kernel": {
+      "artifacts": {
+        "Image": "62a0e5671511996188d57fce0b1efd07f370040a4151de1b7a8581225a069355",
+        "linux-headers-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "11fb9e13cb086a1a60d7d992f9323afb7756dd8d3c4e30d302c853817ca50850",
+        "linux-image-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "6b34bbda9d0f1cd82ded98cf5011955b415fa2fb1ea7fcacb1700f03b7ce200d",
+        "linux-modules-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "a2deaf23d8397b05bc3840124e8a647651b5de3dcef6714c8012ad544086c4e5",
+        "rk3568-t2.dtb": "a6e031b39baa6d84555da7c436179dccf4d0dcd8d01dbbacb92310c53e90b9fc"
+      },
+      "commit": "b005d448722f86de346b67d19cb158ba665d6bd8",
+      "repo": "zspace-t2-kernel",
+      "tag": "v7.3-rc5-1-t2"
+    },
+    "utils": {
+      "artifacts": {
+        "t2-utils_0.1.0_all.deb": "56ee98029060664f0837d4ed202c3b3141a8f18dd0ff84e9e06b1dd39684534f"
+      },
+      "commit": "53a44b74d0766cff192cd05ae3d7003455e5551d",
+      "repo": "zspace-t2-ubuntu-utils",
+      "tag": "v0.1.0"
+    }
+  },
+  "org": "zspace"
+}

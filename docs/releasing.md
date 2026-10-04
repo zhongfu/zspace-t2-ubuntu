@@ -1,16 +1,18 @@
 # Releasing
 
-A release carries the installer SD-card image, the individual build
-components, and the `t2-utils` package.  Two GitHub Actions workflows do the
-work:
+A release carries what this repository builds: the installer SD-card image, the
+rootfs image, the `t2-initramfs` package and `components.lock` (the exact
+kernel, U-Boot and `t2-utils` it was built from).  Two GitHub Actions workflows
+do the work:
 
-* `.github/workflows/release.yml` runs on a date tag (`YYYYMMDD`).  It builds
-  every artefact, then publishes a GitHub release.
-* `.github/workflows/build.yml` runs on pull requests and branch pushes.  It
-  builds the boot chain (`build-all.sh` steps 1 to 6: the vendor firmware, the
-  initramfs, the kernel and U-Boot), keeps no artefacts, and skips the rootfs
-  and the installer image.  It runs on `ubuntu-26.04-arm`, the architecture of
-  the board.
+* `.github/workflows/release.yml` runs on a date tag (`YYYYMMDD`).  It fetches
+  the pinned components, builds every artefact, then publishes a GitHub release.
+* `.github/workflows/build.yml` runs on pull requests and branch pushes.  One
+  job fetches the pinned components and verifies them against `components.lock`;
+  another builds the boot chain (`build-all.sh` steps 2-3: the vendor firmware
+  and the initramfs) on `ubuntu-26.04-arm`, the architecture of the board, and
+  keeps no artefacts.  The rootfs and the installer image (steps 4-5) are the
+  slowest and need the most network, and release.yml builds them anyway.
 
 Both workflows build in the Docker image from `Dockerfile`, through
 `docker-build.sh`.  `docs/building.md` explains that image and the build steps.
@@ -21,6 +23,16 @@ by default: set the repository variable **T2_RELEASE_RUNNER** to
 build it on arm64 instead.
 
 ## Set up a repository
+
+Two repository **variables** matter (Settings > Secrets and variables > Actions
+> Variables):
+
+* **T2_COMPONENTS_ORG** — the GitHub org that owns `zspace-t2-kernel`,
+  `zspace-t2-bootloader` and `zspace-t2-ubuntu-utils`.  The workflows fetch the
+  pinned component artefacts from its releases; an unset variable fails the
+  fetch with a clear message.
+* **T2_RELEASE_RUNNER** — optional; the runner label for the release build
+  (default `ubuntu-latest`).
 
 The build embeds the vendor AP6275P WiFi and Bluetooth firmware, which is
 committed in `rootfs/firmware/brcm/` (`rootfs/firmware/README.md` lists it and
@@ -49,14 +61,17 @@ git push origin 20261004
 The tag starts the **Release** workflow.  It:
 
 1. checks out the tag;
-2. verifies the committed vendor firmware (build step 1, `rootfs/fetch.sh`);
-3. builds every artefact in the Docker image (`./docker-build.sh`);
-4. collects the release files and writes `SHA256SUMS`;
-5. stores them as a workflow artefact;
-6. builds the release notes and creates the GitHub release.
+2. resolves the tag and frees disk;
+3. fetches the pinned component artefacts (`T2_COMPONENTS_ORG`), sha256-verified
+   against `components.lock`;
+4. builds every artefact in the Docker image (`./docker-build.sh`);
+5. collects the release files and writes `SHA256SUMS`;
+6. stores them as a workflow artefact;
+7. builds the release notes and creates the GitHub release.
 
 The release notes have three parts: the changelog, a short explanation of every
-file, and a note on the firmware licence.
+file followed by the component versions from `components.lock`, and a note on
+the firmware licence.
 
 ## The release files
 
@@ -68,26 +83,18 @@ release.
 |---|---|
 | `installer.img` | SD-card installer image.  Write it to a card and boot the board; it installs the system to the eMMC. |
 | `rootfs.ext4.zst` | Ubuntu root filesystem, zstd-compressed.  The installer writes it to the eMMC. |
-| `t2-utils_<version>_all.deb` | The `t2-utils` package: services, scripts and settings for the board. |
-| `t2-utils-apt-repo.tar.gz` | The local apt repository shipped in the image: the package and its `Packages` index. |
-| `Image` | The Linux kernel image. |
-| `rk3568-t2.dtb` | The device tree blob for the T2 board. |
-| `t2-mainline-boot.img` | The kernel FIT: kernel, device tree and initramfs in one bootable image. |
-| `u-boot.itb` | U-Boot bootloader for the eMMC. |
-| `idbloader.img` | Rockchip loader for the eMMC: DDR init and the U-Boot SPL. |
-| `u-boot-installer.itb` | U-Boot bootloader for the SD-card installer. |
-| `idbloader-installer.img` | Rockchip loader for the SD-card installer. |
-| `u-boot-initial-env` | U-Boot default environment for the eMMC image. |
-| `u-boot-installer-initial-env` | U-Boot default environment for the SD-card installer. |
-| `Image.old` | Previous kernel image, for the U-Boot A/B fallback.  Only when the build provides it. |
+| `t2-initramfs_<version>_all.deb` | The boot initramfs: the boot FIT's ramdisk and the payload `linux-image-<rel>-t2` needs for an on-board kernel upgrade. |
+| `components.lock` | The component releases and artefact sha256s this image was built from. |
 | `SHA256SUMS` | SHA-256 checksums.  Check them with `sha256sum -c SHA256SUMS`. |
 
 Most users only need `installer.img`.
 
-The version in the `.deb` name comes from the profile base release
-(`rootfs/profiles/t2-base/base.json`, `release`), not from the git tag.  The two
-usually differ: the package version tracks the Ubuntu release it was built
-against.
+The kernel, U-Boot, `t2-utils` and the raw boot-chain files are built and
+published by the three component repositories; this release does not carry
+them.
+
+The `t2-initramfs` version comes from the profile base release
+(`rootfs/profiles/t2-base/base.json`, `release`), not from the git tag.
 
 ## Re-run a failed build
 
@@ -102,10 +109,10 @@ workflow and type the tag.
 
 Use the same commands as the workflow.  Run them from the repository root.
 
-1. Verify the committed vendor firmware:
+1. Fetch the pinned component artefacts from their releases:
 
 ```sh
-rootfs/fetch.sh
+T2_COMPONENTS_ORG=<org> tools/components.py fetch
 ```
 
 2. Build everything:

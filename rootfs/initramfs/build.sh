@@ -15,6 +15,7 @@
 #      installer streams the payload through `zstd -dc` on the board, and
 #      busybox has no zstd applet
 #   6. copy init, installer.sh and the firmware tree into place
+#   7. pack the tree into build/initramfs.gz (the boot FIT's ramdisk subimage)
 #
 # The 1.2 MB busybox binary, the applet symlinks and the zstd binary are build
 # outputs, not repository content.  The Broadcom WiFi/BT blobs are committed in
@@ -200,6 +201,17 @@ shopt -u nullglob
 cp -f "${blobs[@]}" "$out/lib/firmware/brcm/"
 chmod 644 "$out/lib/firmware/rtl_nic/"* "$out/lib/firmware/"*.db* \
        "$out/lib/firmware/brcm/"* 2>/dev/null || true
+
+# ------------------------------------------------------------- FIT ramdisk
+# The kernel Image does not embed this tree.  The boot FIT carries it as its
+# ramdisk subimage (kernel + board DTB + this gzip'd cpio), and the
+# t2-initramfs package ships the same bytes, so an on-board kernel upgrade
+# assembles an identical FIT.  GNU cpio's -R pins root ownership (which
+# otherwise needs fakeroot) and the sorted find keeps the archive stable.
+echo "== packing the FIT ramdisk =="
+(cd "$out" && find . -print0 | LC_ALL=C sort -z \
+    | cpio --null -o -H newc -R 0:0 | gzip -9) > "$repo/build/initramfs.gz"
+ls -l "$repo/build/initramfs.gz"
 
 echo
 echo "initramfs tree: $out"

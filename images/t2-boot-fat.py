@@ -42,9 +42,9 @@ stays the `default`, so U-Boot's normal bootstd scan is unchanged; only when
 the boot counter exceeds `bootlimit`
 does U-Boot run `altbootcmd`, which loads `/Image.old` directly (the
 `altbootcmd`/`bootlimit` values are compiled into the board defconfig,
-`u-boot/configs/t2-rk3568_defconfig`).  The
-option is opt-in: without it no `/Image.old` and no fallback extlinux entry are
-written.
+`t2-rk3568_defconfig` in the bootloader repository (`zspace-t2-bootloader`)).
+The option is opt-in: without it no `/Image.old` and no fallback extlinux entry
+are written.
 
 `--env-defaults <path>` (default `build/out/u-boot-initial-env` when that file
 exists) writes U-Boot's compiled default environment to `/uboot.env`, which the
