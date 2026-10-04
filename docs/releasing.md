@@ -27,10 +27,10 @@ build it on arm64 instead.
 Two repository **variables** matter (Settings > Secrets and variables > Actions
 > Variables):
 
-* **T2_COMPONENTS_ORG** — the GitHub org that owns `zspace-t2-kernel`,
-  `zspace-t2-bootloader` and `zspace-t2-ubuntu-utils`.  The workflows fetch the
-  pinned component artefacts from its releases; an unset variable fails the
-  fetch with a clear message.
+* **T2_COMPONENTS_ORG** — optional.  `components.lock` records the GitHub org
+  that owns `zspace-t2-kernel`, `zspace-t2-bootloader` and
+  `zspace-t2-ubuntu-utils`, and the fetch uses it, so nothing has to be set.
+  Set this only to pull the component artefacts from a fork or a mirror.
 * **T2_RELEASE_RUNNER** — optional; the runner label for the release build
   (default `ubuntu-latest`).
 
@@ -109,10 +109,11 @@ workflow and type the tag.
 
 Use the same commands as the workflow.  Run them from the repository root.
 
-1. Fetch the pinned component artefacts from their releases:
+1. Fetch the pinned component artefacts from their releases (add
+   `T2_COMPONENTS_ORG=<org>` to take them from a fork or a mirror instead):
 
 ```sh
-T2_COMPONENTS_ORG=<org> tools/components.py fetch
+tools/components.py fetch
 ```
 
 2. Build everything:

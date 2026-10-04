@@ -47,17 +47,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Fetch the pinned components
+        # components.lock records the org its artefacts were published under,
+        # so nothing has to be configured here; T2_COMPONENTS_ORG overrides it
+        # for a fork or a mirror.
         env:
           T2_COMPONENTS_ORG: ${{ vars.T2_COMPONENTS_ORG }}
-        run: |
-          if [ -z "${T2_COMPONENTS_ORG:-}" ]; then
-            echo "error: repository variable T2_COMPONENTS_ORG is not set" >&2
-            echo "       Settings > Secrets and variables > Actions > Variables" >&2
-            echo "       set it to the GitHub org that owns zspace-t2-kernel," >&2
-            echo "       zspace-t2-bootloader and zspace-t2-ubuntu-utils" >&2
-            exit 1
-          fi
-          python3 tools/components.py fetch
+        run: python3 tools/components.py fetch
 
       - name: Verify the fetched tree against components.lock
         run: python3 tools/components.py fetch --check

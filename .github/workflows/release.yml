@@ -73,21 +73,12 @@ jobs:
           sudo docker image prune --all --force
 
       - name: Fetch the pinned components
-        # The release names its component versions, so the exact artefacts the
-        # build consumes are fetched here, before the container starts; the
-        # full build's step 1 then sees them cached and verifies them against
-        # components.lock.  T2_COMPONENTS_ORG has no safe default; fail loudly.
+        # components.lock names the org the pinned artefacts were published
+        # under, so the fetch needs no configuration here; T2_COMPONENTS_ORG
+        # overrides it for a fork or a mirror.
         env:
           T2_COMPONENTS_ORG: ${{ vars.T2_COMPONENTS_ORG }}
-        run: |
-          if [ -z "${T2_COMPONENTS_ORG:-}" ]; then
-            echo "error: repository variable T2_COMPONENTS_ORG is not set" >&2
-            echo "       Settings > Secrets and variables > Actions > Variables" >&2
-            echo "       set it to the GitHub org that owns zspace-t2-kernel," >&2
-            echo "       zspace-t2-bootloader and zspace-t2-ubuntu-utils" >&2
-            exit 1
-          fi
-          python3 tools/components.py fetch
+        run: python3 tools/components.py fetch
 
       - name: Build every artefact
         run: ./docker-build.sh

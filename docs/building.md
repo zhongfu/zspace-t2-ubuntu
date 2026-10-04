@@ -82,12 +82,14 @@ the container below.  `./build-all.sh` can run a subset with `--only`, `--from`,
 
 Step 1 reads `components.lock`: for each pinned artefact it takes the bytes from
 a local directory when `T2_COMPONENTS_DIR` is set (offline and development
-builds), otherwise from the component's GitHub release (`T2_COMPONENTS_ORG`,
-`T2_COMPONENTS_URL_BASE`), and hashes them before use.  A mismatch stops the
-build, so an image never mixes component versions.  The raw kernel and
-boot-chain files are staged into `build/out/`, where the later steps read every
-input.  Step 2 verifies the vendor blobs committed in `rootfs/firmware/brcm/`
-and writes the mainline names there; it needs no network.
+builds), otherwise from the component's GitHub release.  The lock records the
+org those releases live under; `T2_COMPONENTS_ORG` and `T2_COMPONENTS_URL_BASE`
+override it for a fork or a mirror.  Every artefact is hashed before use.  A
+mismatch stops the build, so an image never mixes component versions.  The raw
+kernel and boot-chain files are staged into `build/out/`, where the later steps
+read every input.  Step 2 verifies the vendor blobs committed in
+`rootfs/firmware/brcm/` and writes the mainline names there; it needs no
+network.
 
 Step 3 (`rootfs/initramfs/build.sh`) builds the static busybox and the
 initramfs layout, plus a static `zstd` built from a pinned tarball: the
