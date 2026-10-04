@@ -44,11 +44,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     CROSS_COMPILE=aarch64-linux-gnu-
 
+ARG PROOT_COMMIT=25dc6a3134891f98a79f57ce1c2c1b23ff15cad1
+
 RUN apt-get update \
     && arch=$(dpkg --print-architecture) \
     && case "$arch" in \
          amd64) target_pkgs="libc6-dev-arm64-cross linux-libc-dev-arm64-cross" ;; \
-         arm64) target_pkgs="libc6-dev proot" ;; \
+         arm64) target_pkgs="libc6-dev libtalloc-dev libseccomp-dev" ;; \
          *) echo "unsupported host architecture: $arch" >&2; exit 1 ;; \
        esac \
     && apt-get install -y --no-install-recommends \
@@ -58,6 +60,31 @@ RUN apt-get update \
         python3 python3-dev python3-setuptools python3-pyelftools swig \
         fakeroot e2fsprogs zstd dosfstools mtools util-linux kmod cpio \
         curl tar bzip2 \
+    && if [ "$arch" = arm64 ]; then \
+         # arm64 runs the rootfs chroot with the host's proot, and nothing older
+         # than upstream v5.5.0 works on this runner: Ubuntu 24.04's 5.1.0 and
+         # the archive's 5.4.0-3 crash the guest, and a v5.4.1 built from source
+         # fails as well - all in proot's own re-exec loader, which native arm64
+         # needs and amd64's qemu path never uses (measured 2026-10-04 on
+         # ubuntu-26.04-arm, kernel 7.0.0-1012-azure; v5.5.0 runs the probe
+         # cleanly).  No aarch64 static binary is published, so build it from the
+         # pinned commit.  amd64 downloads the published static binary
+         # (rootfs/t2-distro.py), which is that same commit.
+         git clone -q --depth 1 --branch v5.5.0 https://github.com/proot-me/proot /tmp/proot \
+         && [ "$(git -C /tmp/proot rev-parse HEAD)" = "$PROOT_COMMIT" ] \
+         # v5.5.0's arm64 syscall table has no [439] = PR_faccessat2 entry, though
+         # 439 is that syscall's number on arm64 as well and x86_64's table has
+         # it.  proot therefore does not path-translate faccessat2 on arm64, and
+         # a guest access(2) - dash's test -w, which is what ucf runs inside
+         # openssh-server's postinst - is answered for the *host* path, so it
+         # fails with ENOENT and that postinst dies.  Patch the entry in; the
+         # grep keeps this honest if the pinned commit ever changes.
+         && sed -i '/\[452\] = PR_fchmodat2,/i\    [439] = PR_faccessat2,' /tmp/proot/src/syscall/sysnums-arm64.h \
+         && grep -q '\[439\] = PR_faccessat2,' /tmp/proot/src/syscall/sysnums-arm64.h \
+         && make -s -C /tmp/proot/src -j"$(nproc)" \
+         && install -m 755 /tmp/proot/src/proot /usr/local/bin/proot \
+         && rm -rf /tmp/proot; \
+       fi \
     && apt-get clean
 
 WORKDIR /work

@@ -35,10 +35,12 @@ concurrency:
 
 jobs:
   build:
-    # The build works on amd64 and arm64 hosts (docs/building.md).  Set the
-    # repository variable T2_RELEASE_RUNNER to ubuntu-26.04-arm to build the
-    # release natively on arm64, where the rootfs chroot runs without QEMU.
-    runs-on: ${{ vars.T2_RELEASE_RUNNER || 'ubuntu-latest' }}
+    # arm64 by default: the board's architecture, and the runner the release is
+    # meant to use (native chroot, no qemu).  It needs proot v5.5.0, which the
+    # Dockerfile builds for arm64 - nothing older works in that runner's
+    # container.  The build also works on amd64 (docs/building.md), so
+    # T2_RELEASE_RUNNER=ubuntu-latest moves the release back there.
+    runs-on: ${{ vars.T2_RELEASE_RUNNER || 'ubuntu-26.04-arm' }}
     timeout-minutes: 300
     outputs:
       tag: ${{ steps.tag.outputs.tag }}

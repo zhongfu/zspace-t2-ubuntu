@@ -16,11 +16,17 @@ do the work:
 
 Both workflows build in the Docker image from `Dockerfile`, through
 `docker-build.sh`.  `docs/building.md` explains that image and the build steps.
-The build works on x86-64 and arm64 hosts; on arm64 the rootfs chroot runs
-natively instead of under QEMU.  The release builds on `ubuntu-latest` (x86-64)
-by default: set the repository variable **T2_RELEASE_RUNNER** to
-`ubuntu-26.04-arm` (Settings > Secrets and variables > Actions > Variables) to
-build it on arm64 instead.
+The build works on x86-64 and arm64 hosts.  The release builds on
+`ubuntu-26.04-arm`, the board's architecture, where the rootfs chroot runs
+natively; on amd64 it runs under the pinned upstream static proot plus
+qemu-user-static (`T2_RELEASE_RUNNER=ubuntu-latest` selects that).  arm64 needs
+proot v5.5.0 or newer, which the `Dockerfile` builds from the pinned commit -
+older builds fail in proot's re-exec loader on that runner's kernel (v5.4.1 and
+the distribution's 5.1.0/5.4.0-3 all do; measured 2026-10-04).  That build also
+patches one entry into proot's arm64 syscall table - see the Dockerfile: without
+`[439] = PR_faccessat2` proot does not translate `faccessat2` on arm64, so a
+guest `access(2)` (dash's `test -w`, which `ucf` uses in openssh-server's
+postinst) is answered for the host path and fails, and the rootfs build dies.
 
 ## Set up a repository
 
@@ -32,7 +38,7 @@ Two repository **variables** matter (Settings > Secrets and variables > Actions
   `zspace-t2-ubuntu-utils`, and the fetch uses it, so nothing has to be set.
   Set this only to pull the component artefacts from a fork or a mirror.
 * **T2_RELEASE_RUNNER** — optional; the runner label for the release build
-  (default `ubuntu-latest`).
+  (default `ubuntu-26.04-arm`).
 
 The build embeds the vendor AP6275P WiFi and Bluetooth firmware, which is
 committed in `rootfs/firmware/brcm/` (`rootfs/firmware/README.md` lists it and
