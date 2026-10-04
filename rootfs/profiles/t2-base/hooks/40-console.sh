@@ -33,7 +33,12 @@ EOF
 printf 'root:%s\n' "$T2_ROOT_PASSWORD" | chpasswd
 
 # Say the password on the consoles themselves so it is impossible to miss.
+# /etc/issue is an *agetty* format: `\l` there is replaced with the tty name.
+# /etc/motd is printed verbatim - by sshd after a login, and by pam_motd on the
+# consoles - so it must not carry an escape, or `\l` shows up literally.
 cat > /etc/issue <<'EOF'
 ZSpace T2 (\l) - login as root, password: t2 - change it with `passwd`.
 EOF
-cp /etc/issue /etc/motd
+cat > /etc/motd <<'EOF'
+ZSpace T2 - login as root, password: t2 - change it with `passwd`.
+EOF

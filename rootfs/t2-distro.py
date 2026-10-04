@@ -1909,6 +1909,12 @@ def stage_verify(args, prof: Profile, stage: Path, img: Path,
     c.add("no autologin on serial console (ttyS2)", "--autologin" not in ttyS2, ttyS2)
     issue = debugfs(img, "cat /etc/issue")
     c.add("/etc/issue states the login", "root" in issue and "passwd" in issue, issue[:500])
+    # /etc/motd is printed verbatim (sshd after a login, pam_motd on the
+    # consoles), unlike /etc/issue which agetty formats - so an escape such as
+    # `\l` in it reaches the user literally, which is what it did.
+    motd = debugfs(img, "cat /etc/motd")
+    c.add("/etc/motd repeats the hint with no agetty escapes",
+          "passwd" in motd and "\\" not in motd, motd[:500])
 
     # udev's hardware database must be a real one.  A stub here means
     # systemd-hwe-hwdb's postinst died, which would leave udev resolving no
