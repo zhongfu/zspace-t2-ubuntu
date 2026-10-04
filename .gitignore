@@ -4,3 +4,4 @@ build/
 *.itb
 *.bin
 __pycache__/
+dist/

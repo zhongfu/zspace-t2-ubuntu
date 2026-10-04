@@ -176,6 +176,7 @@ python3 "$here/t2-distro.py" "${t2_args[@]}"
 if [ "$dry" = 1 ]; then
     echo "[dry] would install $work/rootfs.ext4 -> $out/rootfs.ext4"
     echo "[dry] would install the initramfs-tools ramdisk -> $out/initrd.img-*"
+    echo "[dry] would install the t2-initramfs package -> $out/t2-initramfs_*.deb"
     [ "$zstd_compress" = 1 ] && echo "[dry] would zstd-compress it to rootfs.ext4.zst"
     exit 0
 fi
@@ -199,6 +200,16 @@ if [ -z "$rel" ] || [ ! -f "$initrd" ]; then
 fi
 install -m 644 "$initrd" "$out/initrd.img-$rel"
 echo "  $out/initrd.img-$rel"
+
+# The t2-initramfs package is built into $work by t2-distro.py's debs stage
+# (rootfs/initramfs/package.sh).  It is a release artefact - the kernel package
+# Depends on it and tools/collect-release-artifacts.sh looks for it in
+# build/out/ - so stage it here with the step's other outputs.
+deb=$(ls "$work"/t2-initramfs_*.deb 2>/dev/null | head -n 1)
+[ -n "$deb" ] || die "no $work/t2-initramfs_*.deb: the debs stage did not
+     package the initramfs (rootfs/initramfs/package.sh)"
+install -m 644 "$deb" "$out/"
+echo "  $out/$(basename "$deb")"
 
 if [ "$zstd_compress" = 1 ]; then
     command -v zstd >/dev/null 2>&1 || die "zstd is required to write
