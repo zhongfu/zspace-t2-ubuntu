@@ -89,21 +89,41 @@ class Runner:
     def __init__(self, dry: bool) -> None:
         self.dry = dry
 
+    @staticmethod
+    def _failed(pretty: str, p) -> "None":
+        """Report a failing command *with its own output*.
+
+        With capture=True the tool's error message is in p.stdout/p.stderr, and
+        check=True would replace it with a traceback that says only "returned
+        non-zero exit status N" - which is how a failing proot on an arm64
+        runner became an exit status with no explanation at all.
+        """
+        for name, text in (("stdout", p.stdout), ("stderr", p.stderr)):
+            for line in (text or "").splitlines()[-20:]:
+                log(f"  ! {name}: {line}")
+        die(f"command failed ({p.returncode}): {pretty}")
+
     def run(self, argv, *, env=None, cwd=None, capture=False):
         pretty = " ".join(shlex.quote(str(a)) for a in argv)
         log(f"  $ {pretty}")
         if self.dry:
             return None
-        return subprocess.run([str(a) for a in argv], env=env, cwd=cwd,
-                              check=True, text=True,
-                              capture_output=capture)
+        p = subprocess.run([str(a) for a in argv], env=env, cwd=cwd,
+                           text=True, capture_output=capture)
+        if p.returncode != 0:
+            self._failed(pretty, p)
+        return p
 
     def shell(self, script: str, *, env=None, cwd=None, capture=False):
-        log("  $ bash -c " + shlex.quote(script))
+        pretty = "bash -c " + shlex.quote(script)
+        log("  $ " + pretty)
         if self.dry:
             return None
-        return subprocess.run(["bash", "-c", script], env=env, cwd=cwd,
-                              check=True, text=True, capture_output=capture)
+        p = subprocess.run(["bash", "-c", script], env=env, cwd=cwd,
+                           text=True, capture_output=capture)
+        if p.returncode != 0:
+            self._failed(pretty, p)
+        return p
 
 
 # --------------------------------------------------------------------------
