@@ -3,24 +3,24 @@
   "components": {
     "bootloader": {
       "artifacts": {
-        "idbloader-installer.img": "90773af6a858d9b803d0b3e0a40809462334a249d62905e88f281809884de15f",
-        "idbloader.img": "2321074b8a2795329efe0955e261960715b4e8996c03c8efff9eb014e875f74f",
-        "t2-bootloader_2026.07+git4.gb98b499-1_arm64.deb": "3d1f98ee650186998f8be384ae809b2a5b18cb9ad9a3d1ba90dd132e9d11ae1f",
+        "idbloader-installer.img": "550bc577f97ca65dc7f9e29b6fb7f5e0f640da1a817e90091e6c8632424c3f6f",
+        "idbloader.img": "b4cfb2f2519a6aebce62e462e55ee3f68636e6d4007040ddadf7adff87e316ca",
+        "t2-bootloader_2026.07-1_arm64.deb": "149fd2de7b255cfd174508d94a93dac096d81d2b585e1f5f22258940dae1ccf4",
         "u-boot-initial-env": "e0e9498e621adfed12748ea4ece691745e0a55e230b22e6c99a881eb894ce58b",
         "u-boot-installer-initial-env": "807d0b9e03ec7afce522eba1dc0795c1affd48f46386effdcb1fc9a7ba1472c6",
-        "u-boot-installer.itb": "a93d8e81a42c2a583b5bed3f44aecbfd1095c7dc9c3fa160c3a942f9bc6b2b6f",
-        "u-boot.itb": "d3aefe9e0be353b71d89618bf7076ba594aea6bdcfb1afc58248413bf4ba612f"
+        "u-boot-installer.itb": "91c6f2eb7a4453a65d39c958f2fd07b620f8850829b9405329cb3e6183c4bb73",
+        "u-boot.itb": "1e64c52d8d833e299ca54577e9633cd14717b87489af2a1100cdfc7764049a88"
       },
-      "commit": "b98b499e45693a3c13807a61aa8b9edfd9bbd17a",
+      "commit": "674171bc9a23e51b29cfc11170399d866a701b03",
       "repo": "zspace-t2-bootloader",
       "tag": "v2026.07"
     },
     "kernel": {
       "artifacts": {
-        "Image": "62a0e5671511996188d57fce0b1efd07f370040a4151de1b7a8581225a069355",
-        "linux-headers-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "2141a44053f04a45beef8025fed2fcb3aa6125549607860482fb42dacdb808a9",
-        "linux-image-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "621b4897ca92e1b065b5b28b6ea6dc2232918165e2590023c16da5adf3c3bd85",
-        "linux-modules-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "2f404b04df3a236df9a7344f9f085de8199504d29a87054b6ff9864e42d2649d",
+        "Image": "c17f8119be395354f172165cfec1b402f1e399fd388e93d6c73a591ca1e43852",
+        "linux-headers-7.3.0-rc5-t2_7.3.rc5-2_arm64.deb": "aad8b1c0ab1d8e683911f6cdcc9977760be8fa98ee2f4615eb7ea459aa6d82b5",
+        "linux-image-7.3.0-rc5-t2_7.3.rc5-2_arm64.deb": "d953fdaea4afd06cf7700074edc3eb8518a3b9d42a511144ee6673d12e088a4c",
+        "linux-modules-7.3.0-rc5-t2_7.3.rc5-2_arm64.deb": "71c38e1bc318c7221569173fc7eb83e8daead3c11dc36123a5bdad7d0ba87a95",
         "rk3568-t2.dtb": "a6e031b39baa6d84555da7c436179dccf4d0dcd8d01dbbacb92310c53e90b9fc"
       },
       "commit": "2930c3186bc1a3824e9d019251c0fe030afea08b",
@@ -29,9 +29,9 @@
     },
     "utils": {
       "artifacts": {
-        "t2-utils_0.1.0_all.deb": "56ee98029060664f0837d4ed202c3b3141a8f18dd0ff84e9e06b1dd39684534f"
+        "t2-utils_0.1.0_all.deb": "47ccc3729f0fa5ea241c33c30750f22d047bad6fb863149d114f049329019cc5"
       },
-      "commit": "53a44b74d0766cff192cd05ae3d7003455e5551d",
+      "commit": "62fb438cda66a62235e34fbcb39be7f3856ed6ad",
       "repo": "zspace-t2-ubuntu-utils",
       "tag": "v0.1.0"
     }
