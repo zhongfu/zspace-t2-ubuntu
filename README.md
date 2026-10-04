@@ -62,11 +62,17 @@ step 1 fetches them from the component releases and stops on a mismatch, so an
 image can never silently mix component versions. To build offline, point
 `T2_COMPONENTS_DIR` at a directory holding the locked artefacts.
 
-The kernel Image does not embed the initramfs. The boot FIT carries it as a
-ramdisk subimage (kernel + device tree + ramdisk), assembled by `t2-mkfit` from
-the `t2-utils` package, so a change to the installer or the rootfs does not
-force a kernel rebuild. This repository also builds the `t2-initramfs` package
-(`/boot/initramfs-t2.gz`), which an on-board kernel upgrade needs.
+The kernel Image does not embed the initramfs. Each boot FIT carries one as a
+ramdisk subimage (kernel + device tree + ramdisk); both are assembled by
+`t2-mkfit` from the `t2-utils` package: the card's `/Image` carries the
+installer ramdisk, while the eMMC's `/Image` is built from `/Image.emmc` and
+carries the initramfs-tools image (`/boot/initrd.img-<rel>`). A FIT
+configuration selects one ramdisk, and bootstd only boots the default one, so
+the two roles need two files. Because the installer ramdisk stays separate, a
+change to the installer or the rootfs does not force a kernel rebuild. This
+repository also builds the `t2-initramfs` package (the installer ramdisk,
+`/boot/initramfs-t2.gz`), which the kernel postinst falls back to when a rootfs
+has no initramfs-tools.
 
 `docs/building.md` is the full reference. With Docker, `./docker-build.sh`
 builds everything. On a host, `./build-all.sh` runs the five steps, or a subset

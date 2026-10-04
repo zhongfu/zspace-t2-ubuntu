@@ -27,7 +27,7 @@ no qemu is fetched, and the host's own `proot` is used.  Install these packages
 | `build-essential`, `make`, `git` | all builds |
 | `gcc-aarch64-linux-gnu` | cross compiler for the initramfs BusyBox and `t2-keywait` |
 | `fakeroot`, `e2fsprogs` | build the rootfs ext4 image without root (`mke2fs`, `e2fsck`, `debugfs`) |
-| `cpio` | pack the initramfs into the boot FIT's ramdisk subimage |
+| `cpio` | pack the installer ramdisk into the card FIT's ramdisk subimage |
 | `zstd` | compress the rootfs image and the installer payload |
 | `dosfstools`, `mtools` | the FAT boot tree on the installer card (`mkfs.vfat`, `mcopy`) |
 | `curl`, `tar` | fetch and unpack the Ubuntu base tarball |
@@ -95,25 +95,31 @@ Step 3 (`rootfs/initramfs/build.sh`) builds the static busybox and the
 initramfs layout, plus a static `zstd` built from a pinned tarball: the
 installer streams its payloads through `zstd -dc` on the board, and busybox has
 no zstd applet, so both live in the initramfs.  It then packs the tree into
-`build/initramfs.gz`.  That file is the boot FIT's **ramdisk** and the payload
-of the `t2-initramfs` package, which is why nothing else has to run before it.
+`build/initramfs.gz`.  That file is the installer ramdisk: the card FIT's
+**ramdisk** and the payload of the `t2-initramfs` package, which is why nothing
+else has to run before it.
 
 Step 4 (`rootfs/build.sh`, which runs `t2-distro.py`) builds the rootfs ext4
 image.  It installs the fetched `t2-utils` package and the fetched
 `linux-modules-<rel>-t2` package inside the chroot, builds the `t2-initramfs`
-package here, and installs both from the in-image `/opt/t2/repo`.  Step 5
-(`images/build-installer.sh`) assembles the SD-card image: it unpacks `t2-mkfit`
-from the fetched `t2-utils` package, assembles the boot FIT with it, and writes
-the card.
+package here, installs both from the in-image `/opt/t2/repo`, and its `modules`
+stage runs `update-initramfs -c -k <rel>` so `rootfs/build.sh` can copy the
+distribution's ramdisk out to `build/out/initrd.img-<rel>`.  Step 5
+(`images/build-installer.sh`) assembles both boot FITs with `t2-mkfit` (unpacked
+from the fetched `t2-utils` package): the card's `/Image` with the installer
+ramdisk, and `build/out/t2-emmc-boot.img` with the distribution ramdisk, which
+the boot tree carries as `/Image.emmc`.
 
-**Step 3 must precede step 5.**  Step 5 puts `build/initramfs.gz` into the boot
-FIT.  The kernel Image does **not** embed the initramfs: the boot FIT carries it
-as a ramdisk subimage (kernel + device tree + ramdisk), assembled by `t2-mkfit`
-(shipped by the `t2-utils` package, so the image build and the board use one
-implementation).  The ramdisk is stored uncompressed because this U-Boot does
-not decompress a FIT ramdisk.  The FIT's default configuration selects all three
-subimages.  Because the same bytes are the `t2-initramfs` package payload, an
-on-board kernel upgrade can assemble an identical FIT.
+**Step 3 must precede step 5, and step 4 must too.**  Step 5 puts
+`build/initramfs.gz` into the card FIT and `build/out/initrd.img-<rel>` into the
+eMMC FIT.  The kernel Image does **not** embed either initramfs: each FIT
+carries its ramdisk as a subimage (kernel + device tree + ramdisk), assembled by
+`t2-mkfit` (shipped by the `t2-utils` package, so the image build and the board
+use one implementation).  The card's `/Image` is the installer ramdisk; the
+eMMC's `/Image` comes from `/Image.emmc` and boots the distribution's
+initramfs-tools image.  The ramdisks are stored uncompressed because this U-Boot
+does not decompress a FIT ramdisk, and each FIT's default configuration selects
+all three subimages.
 
 All build output goes to `build/`, which git ignores.  Finished artefacts go to
 `build/out/`.
@@ -143,7 +149,7 @@ stamped.  To force one step, delete its stamp (or edit one of its inputs):
 
 | Step | Stamp | Inputs |
 |---|---|---|
-| 3 | `step3-initramfs.sha256` | the `rootfs/initramfs/` tree (its packed output is the boot FIT's ramdisk and the `t2-initramfs` payload) |
+| 3 | `step3-initramfs.sha256` | the `rootfs/initramfs/` tree (its packed output is the card FIT's ramdisk and the `t2-initramfs` payload) |
 | 4 | `step4-rootfs.sha256` | the rootfs scripts, the `rootfs/profiles/t2-base` tree, `rootfs/firmware/`, `rootfs/initramfs/firmware/`, `lib/`, the fetched component artefacts and `build/initramfs.gz` |
 | 5 | `step5-installer.sha256` | `images/` tools and the config template, the staged kernel and boot-chain artefacts, `build/initramfs.gz`, `rootfs.ext4.zst` (plus `Image.old`/`u-boot-initial-env` when present) |
 
@@ -201,9 +207,9 @@ repository inside the image at `/opt/t2/repo`:
   repository consumes it as an artefact, and `components.lock` pins the `.deb`
   by sha256.  It also carries `t2-mkfit`, the boot-FIT assembler the image build
   and the board both use.
-* **`t2-initramfs`** — the boot initramfs, built here by
+* **`t2-initramfs`** — the installer initramfs, built here by
   `rootfs/initramfs/package.sh` from `build/initramfs.gz` (the same bytes as the
-  FIT ramdisk).  It installs `/boot/initramfs-t2.gz`.  `/boot` is an ordinary
+  card FIT ramdisk).  It installs `/boot/initramfs-t2.gz`.  `/boot` is an ordinary
   rootfs directory on the board (the profile's fstab carries no entries and the
   boot FAT is mounted on demand by `t2-utils`' `t2-boot-commit.sh`), so nothing
   shadows the file.
@@ -228,11 +234,13 @@ A newer component applies without reflashing: copy its `.deb` to the board and
 details for the image's packages.
 
 An **on-board kernel upgrade** works the same way: `linux-image-<rel>-t2`
-depends on `t2-initramfs`, and its `postinst` assembles a boot FIT from the
-kernel, the board device tree and `/boot/initramfs-t2.gz` with `t2-mkfit`, then
-installs it into the boot tree.  The boot tree is addressed by `T2_BOOT_DIR`;
-when it is unset (the image-build chroot, and every board today) the package
-skips the FIT with a clear message and exits 0.
+depends on `t2-initramfs`, and its `postinst` regenerates the distribution's
+initramfs and assembles a boot FIT from the kernel, the board device tree and
+`/boot/initrd.img-<rel>` with `t2-mkfit`, then installs it into the boot tree.
+A rootfs without `initramfs-tools` falls back to `/boot/initramfs-t2.gz`, the
+installer ramdisk.  The boot tree is addressed by `T2_BOOT_DIR`; when it is
+unset (the image-build chroot, and every board today) the package skips the FIT
+with a clear message and exits 0.
 
 ## Firmware
 
@@ -240,10 +248,10 @@ The Broadcom WiFi and Bluetooth firmware for the AP6275P module comes from the
 vendor rootfs.  No redistributable source ships it: it is not in
 `linux-firmware`, and the Ubuntu firmware packages do not carry it.  The four
 vendor blobs are committed in `rootfs/firmware/brcm/` and embedded in the
-images: step 3 packs them into the initramfs (the boot FIT's ramdisk) and the
-rootfs hook installs them in `/lib/firmware`.  `rootfs/fetch.sh` verifies them
-and writes the mainline names; it can also refresh them from a T2 that still
-runs the vendor firmware, or from a vendor update package.
+images: step 3 packs them into the installer initramfs (the card FIT's ramdisk)
+and the rootfs hook installs them in `/lib/firmware`.  `rootfs/fetch.sh`
+verifies them and writes the mainline names; it can also refresh them from a T2
+that still runs the vendor firmware, or from a vendor update package.
 `rootfs/build.sh` stops with a clear message when the firmware is missing.
 
 The mainline driver expects these names in `/lib/firmware/brcm/`:

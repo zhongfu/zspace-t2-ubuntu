@@ -34,11 +34,13 @@ installer:
 
   * a `config` FAT (`--config`/`--boot-dir`, `--config-size`, `--config-label`)
     carrying `/t2-config.txt` merged with the boot tree *as files* copied to
-    the FAT root: `/Image`, the DTB, `/extlinux/extlinux.conf` (the card
-    descriptor), `/extlinux/t2-emmc.conf` (the eMMC descriptor), `/uboot.env`
-    and `/Image.old`, plus `/u-boot.itb` and `/idbloader.img` (the installer
-    writes those to the new p1/SPL).  256 MiB (`--config-size 256M`) holds the
-    kernel, its fallback and the loaders with room to spare - the old 16 MiB
+    the FAT root: `/Image` (the card's FIT), `/Image.emmc` (the installed
+    system's FIT, which the installer copies to the eMMC's boot tree), the DTB,
+    `/extlinux/extlinux.conf` (the card descriptor),
+    `/extlinux/t2-emmc.conf` (the eMMC descriptor), `/uboot.env` and
+    `/Image.old`, plus `/u-boot.itb` and `/idbloader.img` (the installer
+    writes those to the new p1/SPL).  256 MiB (`--config-size 256M`) holds
+    both FITs, the fallback and the loaders with room to spare - the old 16 MiB
     default cannot;
   * one `payload` ext4 partition (`--payload-dir`, `--payload-size`,
     `T2-FLASH`) whose directory is copied to the filesystem root, so the
@@ -590,11 +592,11 @@ def main() -> int:
                          f"reads on boot")
     ap.add_argument("--boot-dir", type=Path,
                     help="directory copied to the root of the same FAT "
-                         "partition (the boot tree as files: Image, dtb, "
-                         "extlinux/, uboot.env, Image.old - and, for an install "
-                         "card, u-boot.itb + idbloader.img that the installer "
-                         "writes to the new p1/SPL): what makes the card "
-                         "bootable by mainline U-Boot's bootstd")
+                         "partition (the boot tree as files: Image, "
+                         "Image.emmc, dtb, extlinux/, uboot.env, Image.old - "
+                         "and, for an install card, u-boot.itb + idbloader.img "
+                         "that the installer writes to the new p1/SPL): what "
+                         "makes the card bootable by mainline U-Boot's bootstd")
     ap.add_argument("--config-size", default="16M",
                     help=f"size of that partition (default {human(CONFIG_SIZE)}; "
                          f"an install card carrying the kernel, its fallback and "

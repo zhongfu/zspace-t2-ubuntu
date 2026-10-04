@@ -157,6 +157,12 @@ CONF_NAME = "extlinux.conf"
 # the installer (`t2-installer`) - the installer never edits a conf.
 EMMC_CONF_NAME = "t2-emmc.conf"
 KERNEL_NAME = "Image"
+# The installed system's kernel FIT.  The card's config FAT carries it, and the
+# installer copies it to the eMMC's boot tree in place of /Image: same kernel and
+# DTB, but the distro's initramfs-tools ramdisk instead of the installer one.
+# Two files rather than two FIT configurations, because a FIT configuration
+# selects one ramdisk and extlinux/bootstd only ever use the default one.
+EMMC_KERNEL_NAME = "Image.emmc"
 # The persistent U-Boot environment, written with the A/B kernel so a freshly
 # installed kernel is *armed* before its first boot.  U-Boot's `env_t` is a
 # 4-byte CRC32 of the data (native word order: little-endian on this ARM
@@ -207,12 +213,15 @@ def probe(*argv: object) -> subprocess.CompletedProcess:
 
 
 def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
-                 env_defaults: Path | None = None) -> None:
+                 env_defaults: Path | None = None,
+                 emmc_image: Path | None = None) -> None:
     pairs = [("--image", image), ("--dtb", dtb)]
     if fallback is not None:
         pairs.append(("--fallback-image", fallback))
     if env_defaults is not None:
         pairs.append(("--env-defaults", env_defaults))
+    if emmc_image is not None:
+        pairs.append(("--emmc-image", emmc_image))
     for what, p in pairs:
         if not p.exists():
             die(f"{what} {p}: no such file")
@@ -220,6 +229,8 @@ def check_inputs(image: Path, dtb: Path, fallback: Path | None = None,
             die(f"{what} {p}: not a regular file")
     if image.stat().st_size == 0:
         die(f"--image {image}: empty file")
+    if emmc_image is not None and emmc_image.stat().st_size == 0:
+        die(f"--emmc-image {emmc_image}: empty file")
     if fallback is not None and fallback.stat().st_size == 0:
         die(f"--fallback-image {fallback}: empty file")
     if env_defaults is not None and env_defaults.stat().st_size == 0:
@@ -242,9 +253,11 @@ def validate(label: str, dtb_name: str, append: str,
             f"referenced from extlinux.conf")
     if len(dtb_name.encode()) > 255:
         die(f"--dtb {dtb_name!r}: name longer than VFAT allows (255 bytes)")
-    if dtb_name in (CONF_DIR, KERNEL_NAME, FALLBACK_KERNEL_NAME):
+    if dtb_name in (CONF_DIR, KERNEL_NAME, FALLBACK_KERNEL_NAME,
+                    EMMC_KERNEL_NAME):
         die(f"--dtb basename {dtb_name!r} collides with /{CONF_DIR}, "
-            f"/{KERNEL_NAME} or /{FALLBACK_KERNEL_NAME} on the boot partition")
+            f"/{KERNEL_NAME}, /{FALLBACK_KERNEL_NAME} or "
+            f"/{EMMC_KERNEL_NAME} on the boot partition")
     if any(c in "\r\n" for c in append):
         die("--append: a newline would split the extlinux.conf entry")
     if flash_append is not None and any(c in "\r\n" for c in flash_append):
@@ -292,15 +305,17 @@ def conf_pair(dtb_name: str, append: str, flash_append: str | None,
     """The two extlinux descriptors of an `--out-dir` tree.
 
     The card descriptor (`extlinux/extlinux.conf`) makes the `t2-installer`
-    flash entry the `default` when one exists (so the card boots into the
-    installer), and the eMMC descriptor (`extlinux/t2-emmc.conf`) keeps
-    `t2-emmc` as the `default` (both entries are present, so the eMMC can still
-    reach flash mode from the bootstd menu).  Both come from `conf_text()`, the
-    same construction the FAT image uses.
+    flash entry the `default` when one exists, so the card boots into the
+    installer; the eMMC descriptor (`extlinux/t2-emmc.conf`) names only
+    `t2-emmc` (and `t2-emmc-old`) and defaults to it.  Flash mode is a card
+    feature: the eMMC's boot tree carries the distribution's initramfs
+    (/Image.emmc), which has no installer in it, so offering the entry there
+    would promise something the ramdisk cannot do.  Both come from
+    `conf_text()`, the same construction the FAT image uses.
     """
     card_default = FLASH_LABEL if flash_append is not None else CONF_LABEL
     return (conf_text(dtb_name, append, flash_append, card_default, fallback),
-            conf_text(dtb_name, append, flash_append, CONF_LABEL, fallback))
+            conf_text(dtb_name, append, None, CONF_LABEL, fallback))
 
 
 def env_blob(defaults: Path, arm: bool = False) -> bytes:
@@ -370,7 +385,7 @@ def resolve_size(want: str, contents: int) -> int:
 
 def build(out: Path, label: str, size: int, image: Path, dtb: Path,
           conf: bytes, fallback: Path | None = None,
-          env: bytes | None = None) -> None:
+          env: bytes | None = None, emmc_image: Path | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
     subprocess.run(["truncate", "-s", str(size), str(out)], check=True)
@@ -380,6 +395,8 @@ def build(out: Path, label: str, size: int, image: Path, dtb: Path,
     run("mformat", "-i", out, "-F", "-v", label, "::")
     run("mmd", "-i", out, f"::/{CONF_DIR}")
     run("mcopy", "-i", out, image, f"::/{KERNEL_NAME}")
+    if emmc_image is not None:
+        run("mcopy", "-i", out, emmc_image, f"::/{EMMC_KERNEL_NAME}")
     if fallback is not None:
         run("mcopy", "-i", out, fallback, f"::/{FALLBACK_KERNEL_NAME}")
     run("mcopy", "-i", out, dtb, f"::/{dtb.name}")
@@ -423,7 +440,8 @@ def env_checks(got: bytes, want: bytes) -> list:
 
 
 def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
-           fallback: Path | None = None, env: bytes | None = None) -> list:
+           fallback: Path | None = None, env: bytes | None = None,
+           emmc_image: Path | None = None) -> list:
     """Read the finished image back with mtools; return (name, ok, detail)."""
     checks = []
     info = probe("minfo", "-i", out, "::")
@@ -444,11 +462,14 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
     entries = sorted(line.strip() for line in listing.stdout.splitlines()
                      if line.strip().startswith("::/"))
     want = sorted([f"::/{KERNEL_NAME}", f"::/{dtb.name}", f"::/{CONF_DIR}/"]
+                  + ([f"::/{EMMC_KERNEL_NAME}"] if emmc_image is not None
+                     else [])
                   + ([f"::/{FALLBACK_KERNEL_NAME}"] if fallback is not None
                      else [])
                   + ([f"::/{ENV_NAME}"] if env is not None else []))
     names = ("root is exactly " + (f"/{ENV_NAME}, " if env is not None else "")
              + f"/{KERNEL_NAME}"
+             + (f", /{EMMC_KERNEL_NAME}" if emmc_image is not None else "")
              + (f", /{FALLBACK_KERNEL_NAME}" if fallback is not None else "")
              + ", /<dtb>, /extlinux")
     checks.append((names, entries == want,
@@ -462,6 +483,14 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
                        got_sha == want_sha,
                        f"{got_sha[:16]} vs {want_sha[:16]} "
                        f"({len(got):,} of {image.stat().st_size:,} B)"))
+        if emmc_image is not None:
+            got = fat_bytes(out, EMMC_KERNEL_NAME, tmpd / "Image.emmc")
+            want_sha = sha256_file(emmc_image)
+            got_sha = hashlib.sha256(got).hexdigest()
+            checks.append((f"/{EMMC_KERNEL_NAME} sha256 == {emmc_image.name}",
+                           got_sha == want_sha,
+                           f"{got_sha[:16]} vs {want_sha[:16]} "
+                           f"({len(got):,} of {emmc_image.stat().st_size:,} B)"))
         if fallback is not None:
             got = fat_bytes(out, FALLBACK_KERNEL_NAME, tmpd / "Image.old")
             want_sha = sha256_file(fallback)
@@ -504,7 +533,8 @@ def verify(out: Path, label: str, image: Path, dtb: Path, conf: bytes,
 
 def write_out_dir(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
                   emmc_conf: bytes, fallback: Path | None = None,
-                  env: bytes | None = None) -> None:
+                  env: bytes | None = None,
+                  emmc_image: Path | None = None) -> None:
     """Write the boot tree as *files* (the card's config FAT root).
 
     Same inputs as `build()` - one code path for the same validation and
@@ -514,6 +544,8 @@ def write_out_dir(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / CONF_DIR).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(image, out_dir / KERNEL_NAME)
+    if emmc_image is not None:
+        shutil.copyfile(emmc_image, out_dir / EMMC_KERNEL_NAME)
     shutil.copyfile(dtb, out_dir / dtb.name)
     if fallback is not None:
         shutil.copyfile(fallback, out_dir / FALLBACK_KERNEL_NAME)
@@ -533,10 +565,13 @@ def conf_default(text: str) -> str:
 
 def verify_tree(out_dir: Path, image: Path, dtb: Path, card_conf: bytes,
                 emmc_conf: bytes, flash: bool, fallback: Path | None = None,
-                env: bytes | None = None) -> list:
+                env: bytes | None = None,
+                emmc_image: Path | None = None) -> list:
     """Read the written tree back from the directory; return (name, ok, detail)."""
     checks = []
     expect = {KERNEL_NAME: image, dtb.name: dtb}
+    if emmc_image is not None:
+        expect[EMMC_KERNEL_NAME] = emmc_image
     if fallback is not None:
         expect[FALLBACK_KERNEL_NAME] = fallback
     missing = [rel for rel in expect if not (out_dir / rel).is_file()]
@@ -593,11 +628,18 @@ def main() -> int:
                          f"{FLASH_LABEL} with --flash-append) and "
                          f"/{CONF_DIR}/{EMMC_CONF_NAME} (eMMC descriptor, "
                          f"default {CONF_LABEL}), plus "
+                         f"/{EMMC_KERNEL_NAME} with --emmc-image, "
                          f"/{FALLBACK_KERNEL_NAME} with --fallback-image and "
                          f"/{ENV_NAME} from --env-defaults (armed only with "
                          "--fallback-image).  No FAT image is written")
     ap.add_argument("--image", type=Path, required=True,
                     help="kernel Image, copied to /Image")
+    ap.add_argument("--emmc-image", type=Path, default=None,
+                    help="the installed system's kernel FIT - the same kernel "
+                         "and DTB, but the distro's initramfs-tools ramdisk: "
+                         f"written to /{EMMC_KERNEL_NAME}, which the installer "
+                         f"copies to the eMMC's boot tree as /{KERNEL_NAME}.  "
+                         "Not written when absent")
     ap.add_argument("--dtb", type=Path, required=True,
                     help="board DTB, copied to /<basename>")
     ap.add_argument("--fallback-image", type=Path, default=None,
@@ -646,6 +688,7 @@ def main() -> int:
         die(f"--default-entry {FLASH_LABEL} needs --flash-append")
 
     fallback = args.fallback_image
+    emmc_image = args.emmc_image
     # Ship the board's compiled default environment as /uboot.env whenever the
     # build has one.  U-Boot reads its environment from the eMMC's FAT boot
     # partition (CONFIG_ENV_FAT_DEVICE_AND_PART / CONFIG_ENV_FAT_FILE), so this
@@ -660,7 +703,7 @@ def main() -> int:
             die(f"--env-defaults {env_src}: no such file (a U-Boot build's "
                 f"`make u-boot-initial-env` output{why})")
         env_src = None
-    check_inputs(args.image, args.dtb, fallback, env_src)
+    check_inputs(args.image, args.dtb, fallback, env_src, emmc_image)
     dtb_name = args.dtb.name
     validate(args.label, dtb_name, args.append, args.flash_append)
 
@@ -678,6 +721,8 @@ def main() -> int:
         log(f"  /{CONF_DIR}/{EMMC_CONF_NAME}: eMMC descriptor, "
             f"default={CONF_LABEL}")
         files = [(f"/{KERNEL_NAME}", args.image.stat().st_size)]
+        if emmc_image is not None:
+            files.append((f"/{EMMC_KERNEL_NAME}", emmc_image.stat().st_size))
         if fallback is not None:
             files.append((f"/{FALLBACK_KERNEL_NAME}",
                           fallback.stat().st_size))
@@ -691,11 +736,11 @@ def main() -> int:
         for name, n in files:
             log(f"  {name:28s} {human(n):>18}")
         write_out_dir(args.out_dir, args.image, args.dtb, card_conf,
-                      emmc_conf, fallback, env)
+                      emmc_conf, fallback, env, emmc_image)
 
         log("-- verify (read back from the directory) --")
         checks = verify_tree(args.out_dir, args.image, args.dtb, card_conf,
-                             emmc_conf, flash, fallback, env)
+                             emmc_conf, flash, fallback, env, emmc_image)
         bad = [c for c in checks if not c[1]]
         for name, ok, detail in checks:
             log(f"  [{'ok' if ok else 'FAIL'}] {name}  ({detail})")
@@ -714,6 +759,8 @@ def main() -> int:
     conf = conf_text(dtb_name, args.append, args.flash_append,
                      args.default_entry, fallback is not None)
     contents = args.image.stat().st_size + args.dtb.stat().st_size + len(conf)
+    if emmc_image is not None:
+        contents += emmc_image.stat().st_size
     if fallback is not None:
         contents += fallback.stat().st_size
     if env is not None:
@@ -733,6 +780,8 @@ def main() -> int:
         log(f"  /{CONF_DIR}/{CONF_NAME}: {len(entries)} entries "
             f"({', '.join(entries)})")
     files = [(f"/{KERNEL_NAME}", args.image.stat().st_size)]
+    if emmc_image is not None:
+        files.append((f"/{EMMC_KERNEL_NAME}", emmc_image.stat().st_size))
     if fallback is not None:
         files.append((f"/{FALLBACK_KERNEL_NAME}", fallback.stat().st_size))
     if env is not None:
@@ -747,11 +796,11 @@ def main() -> int:
         die(f"the computed size {human(size)} is below the contents")
 
     build(args.out, args.label, size, args.image, args.dtb, conf,
-          fallback, env)
+          fallback, env, emmc_image)
 
     log("-- verify (read back with mtools) --")
     checks = verify(args.out, args.label, args.image, args.dtb, conf,
-                    fallback, env)
+                    fallback, env, emmc_image)
     bad = [c for c in checks if not c[1]]
     for name, ok, detail in checks:
         log(f"  [{'ok' if ok else 'FAIL'}] {name}  ({detail})")

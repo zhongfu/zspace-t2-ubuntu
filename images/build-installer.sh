@@ -12,6 +12,9 @@
 # U-Boot's bootstd scans the card's FAT partition and selects the t2-installer
 # entry (cmdline t2.mode=flash), so the initramfs runs its installer and writes
 # the eMMC: new GPT, a fresh T2-BOOT p3, the rootfs, then U-Boot and the SPL.
+# The eMMC's own /Image is /Image.emmc from that tree: the kernel with the
+# installed system's initramfs-tools ramdisk, since the flash-mode ramdisk only
+# belongs on the card.
 #
 # Inputs (all required; build-all.sh step 1 stages the raw files into
 # build/out/, the initramfs step packs the ramdisk):
@@ -87,12 +90,25 @@ log "packing the kernel FIT with t2-mkfit (kernel + dtb + initramfs ramdisk)"
 	--ramdisk "$BUILD/initramfs.gz" \
 	--out "$OUT/t2-mainline-boot.img" || die "t2-mkfit failed"
 
+# 1b. the FIT the installer writes to the eMMC: the same kernel and DTB, but the
+# installed system's own initramfs-tools ramdisk.  It cannot be the same FIT as
+# the card's: a FIT configuration selects one ramdisk, and extlinux/bootstd pick
+# the default one, so the two roles get two files - /Image for the card (flash
+# mode lives in its ramdisk) and /Image.emmc for the eMMC.
+emmc_initrd=$(ls "$OUT"/initrd.img-* 2>/dev/null | head -n 1)
+[ -n "$emmc_initrd" ] || die "missing $OUT/initrd.img-* (rootfs/build.sh generates it: the modules stage runs update-initramfs)"
+log "packing the eMMC FIT with t2-mkfit (kernel + dtb + $(basename "$emmc_initrd"))"
+"$PY" "$MKFIT" --kernel "$OUT/Image" --dtb "$OUT/rk3568-t2.dtb" \
+	--ramdisk "$emmc_initrd" \
+	--out "$OUT/t2-emmc-boot.img" || die "t2-mkfit failed"
+
 # 2. the boot tree as files, for the card's FAT partition
 TREE="$BUILD/installer-boot-tree"
 PAYLOAD="$BUILD/installer-payload"
 rm -rf "$TREE" "$PAYLOAD"
 log "building the boot tree (t2-boot-fat.py --out-dir)"
 boot_args=(--image "$OUT/t2-mainline-boot.img" --dtb "$OUT/rk3568-t2.dtb"
+	--emmc-image "$OUT/t2-emmc-boot.img"
 	--out-dir "$TREE" --flash-append t2.mode=flash)
 # /uboot.env carries the board's own compiled default environment; U-Boot reads
 # its environment from the eMMC's FAT boot partition, so shipping it is what

@@ -31,8 +31,9 @@ package this subtree builds, from the in-image apt repository (below).
   the A/B boot helpers and the BLE management stack.
 * `image.json` - the artifact (`rootfs.ext4`), its ext4 label and pinned UUID,
   the target partition geometry, the kernel `cmdline`, the firmware source tree
-  (`build/firmware`, staged by `build.sh`) and the boot FIT's inputs (kernel,
-  DTB and ramdisk), which `images/build-installer.sh` assembles with `t2-mkfit`.
+  (`build/firmware`, staged by `build.sh`) and the boot FITs' inputs (kernel,
+  DTB and ramdisk), which `images/build-installer.sh` assembles with `t2-mkfit`
+  into the card's `/Image` and the eMMC's `/Image.emmc`.
 * `t2-config.example` - the documented `t2-config` keys for out-of-band
   provisioning.  Copy it to a FAT partition labelled `T2-CONFIG`.
 * `hooks/` - scripts run in the chroot, ascending, after the packages.
@@ -73,10 +74,11 @@ and installs them *from that repository* in the chroot:
   `/usr/local/sbin` helpers, and `t2-mkfit`).  Built by
   `zspace-t2-ubuntu-utils`; the fetched `.deb` comes from
   `build/components/utils/`, sha256-verified against `components.lock`.
-* **`t2-initramfs`** - the boot initramfs, built here by
+* **`t2-initramfs`** - the installer initramfs, built here by
   `initramfs/package.sh` from `build/initramfs.gz`.  It installs
-  `/boot/initramfs-t2.gz`, which `linux-image-<rel>-t2` needs (its postinst
-  assembles a boot FIT from the kernel, the DTB and this ramdisk).
+  `/boot/initramfs-t2.gz`, the card FIT's ramdisk and the fallback
+  `linux-image-<rel>-t2` uses when a rootfs has no initramfs-tools (its postinst
+  otherwise builds the boot FIT from `/boot/initrd.img-<rel>`).
 
 So the image ships both installed packages and the repository they came from,
 and every build exercises the offline path a running board uses (`trusted=yes`
@@ -109,9 +111,10 @@ ssh root@<board> 'apt-get install -y /tmp/t2-utils_26.04.2_all.deb'
 
 ## initramfs
 
-`initramfs/` is the source of the initramfs the board boots.  The kernel Image
-does **not** embed it: `rootfs/initramfs/build.sh` packs the tree into
-`build/initramfs.gz`, which `images/build-installer.sh` puts into the boot FIT
+`initramfs/` is the source of the installer initramfs: the card boots it, and
+it runs the installer that writes the eMMC.  The kernel Image does **not**
+embed it: `rootfs/initramfs/build.sh` packs the tree into
+`build/initramfs.gz`, which `images/build-installer.sh` puts into the card FIT
 as its ramdisk subimage, and `initramfs/package.sh` turns the same bytes into
 the `t2-initramfs` package.  `/init` mounts `/` and `switch_root`s straight to
 systemd; on the failure path it brings up a recovery network.  With

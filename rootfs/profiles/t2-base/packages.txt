@@ -54,6 +54,13 @@ bluez
 python3-dbus
 python3-gi
 
+# initramfs-tools is how the installed system's initramfs is built, the same way
+# the other Debian derivatives do it: update-initramfs (the modules stage runs it
+# once the kernel is installed) writes /boot/initrd.img-<rel>, and the boot tree's
+# FIT carries it as its ramdisk.  The card's own FIT keeps the installer ramdisk
+# from t2-initramfs, because flash mode lives in it.
+initramfs-tools
+
 # i2c-tools: the initramfs installer reads the rk809 PMIC's power-on source
 # register (rk809 @ 0x20 on i2c0, reg 0xf5) to log how the board was turned on,
 # and skips that line cleanly when i2cget is absent.  It is kept here as the

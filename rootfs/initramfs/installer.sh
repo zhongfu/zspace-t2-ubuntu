@@ -505,10 +505,10 @@ reboot_now() {
 	# restart: it skips device_shutdown entirely and has always worked here (the
 	# bring-up notes use it for exactly this reason), so try it first.
 	#
-	# Guarded on `$$ -eq 1`: /proc/sysrq-trigger is host state, and this script
-	# is also exercised by test-t2-installer.sh on the workstation - a root-run
-	# test must never reboot the workstation.  (In the initramfs /init `exec`s
-	# installer.sh, so it really is PID 1 there.)
+	# Guarded on `$$ -eq 1`: /proc/sysrq-trigger is host state, and installer.sh
+	# also runs from a workstation root shell while the flow is being worked on -
+	# a root-run test must never reboot the workstation.  (In the initramfs
+	# /init `exec`s installer.sh, so it really is PID 1 there.)
 	if [ "$$" -eq 1 ] && [ -z "${T2_INSTALL_NO_SYSRQ:-}" ]; then
 		echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
 		echo b > /proc/sysrq-trigger 2>/dev/null || true
@@ -1104,8 +1104,23 @@ flash_run() {
 		drop_to_shell
 	fi
 	mkdir -p "$BMNT/extlinux"
-	cp "$TREE/Image" "$BMNT/Image" \
-		|| { log "copying Image to ${DISK}p3 failed"; drop_to_shell; }
+	# Two FITs travel on the card.  /Image is the card's: the kernel with the
+	# installer ramdisk, which is what flash mode needs.  /Image.emmc is the
+	# installed system's: the same kernel with the distro's initramfs-tools
+	# ramdisk, so an installed board boots its root the way the distribution
+	# does.  The eMMC gets the second one; a card built before it existed falls
+	# back to the first, which still boots (its init resolves the root too).
+	image_src="$TREE/Image.emmc"
+	[ -f "$image_src" ] || image_src="$TREE/Image"
+	cp "$image_src" "$BMNT/Image" \
+		|| { log "copying $image_src to ${DISK}p3 failed"; drop_to_shell; }
+	log "boot tree /Image is $(basename "$image_src")"
+	got=$(sha256sum "$BMNT/Image" | cut -d' ' -f1)
+	want=$(sha256sum "$image_src" | cut -d' ' -f1)
+	if [ "$got" != "$want" ]; then
+		log "${DISK}p3/Image does not match $image_src after the copy; refusing"
+		drop_to_shell
+	fi
 	if [ -f "$TREE/Image.old" ]; then
 		cp "$TREE/Image.old" "$BMNT/Image.old" \
 			|| { log "copying Image.old to ${DISK}p3 failed"; drop_to_shell; }

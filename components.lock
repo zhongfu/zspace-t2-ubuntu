@@ -18,14 +18,14 @@
     "kernel": {
       "artifacts": {
         "Image": "62a0e5671511996188d57fce0b1efd07f370040a4151de1b7a8581225a069355",
-        "linux-headers-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "11fb9e13cb086a1a60d7d992f9323afb7756dd8d3c4e30d302c853817ca50850",
-        "linux-image-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "6b34bbda9d0f1cd82ded98cf5011955b415fa2fb1ea7fcacb1700f03b7ce200d",
-        "linux-modules-7.3.0-rc5-t2_7.3~rc5-1_arm64.deb": "a2deaf23d8397b05bc3840124e8a647651b5de3dcef6714c8012ad544086c4e5",
+        "linux-headers-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "2141a44053f04a45beef8025fed2fcb3aa6125549607860482fb42dacdb808a9",
+        "linux-image-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "621b4897ca92e1b065b5b28b6ea6dc2232918165e2590023c16da5adf3c3bd85",
+        "linux-modules-7.3.0-rc5-t2_7.3~rc5-2_arm64.deb": "2f404b04df3a236df9a7344f9f085de8199504d29a87054b6ff9864e42d2649d",
         "rk3568-t2.dtb": "a6e031b39baa6d84555da7c436179dccf4d0dcd8d01dbbacb92310c53e90b9fc"
       },
-      "commit": "6e14d77cdc702c85e06f6eaffd176593b985b32c",
+      "commit": "2930c3186bc1a3824e9d019251c0fe030afea08b",
       "repo": "zspace-t2-kernel",
-      "tag": "v7.3-rc5-1-t2"
+      "tag": "v7.3-rc5-2-t2"
     },
     "utils": {
       "artifacts": {

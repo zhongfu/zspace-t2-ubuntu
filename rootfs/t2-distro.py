@@ -1409,6 +1409,11 @@ def stage_modules(args, R: Runner, ch: Chroot, stage: Path) -> bool:
     want = (f"{image_package} {deb_version(image_deb)} {sha256_file(image_deb)} "
             f"{package} {deb_version(deb)} {sha256_file(deb)} {baked}")
     dep = stage / "lib/modules" / rel / "modules.dep"
+    # The installed system boots an initramfs-tools ramdisk.  It is generated
+    # here because this is the only stage that has the modules and the tools at
+    # once, and because the image must ship the file the boot tree's FIT carries
+    # as its ramdisk (images/build-installer.sh packs it into /Image.emmc).
+    initrd = stage / "boot" / f"initrd.img-{rel}"
     if args.backend == "none":
         log("  [skip] backend none: cannot install in the chroot")
         LAST["modules"] = {}
@@ -1418,6 +1423,7 @@ def stage_modules(args, R: Runner, ch: Chroot, stage: Path) -> bool:
             "stage")
         return False
     if stamp_read(stage, "modules") == want and dep.is_file() \
+            and initrd.is_file() and initrd.stat().st_size \
             and (stage / "var/lib/dpkg/info" / f"{package}.list").is_file() \
             and (stage / "var/lib/dpkg/info"
                  / f"{image_package}.list").is_file():
@@ -1461,6 +1467,20 @@ def stage_modules(args, R: Runner, ch: Chroot, stage: Path) -> bool:
             die(f"{name} was not installed into the stage")
     if not dep.is_file() or not dep.stat().st_size:
         die(f"{dep} is missing or empty after installing {deb.name}")
+    # The distro's initramfs, built the way every Debian derivative builds it:
+    # update-initramfs reads /lib/modules and the initramfs-tools hooks, so it
+    # has to run after the kernel package is installed.  A profile without
+    # initramfs-tools is not fatal - the board then boots the installer ramdisk
+    # from t2-initramfs, which is also the fallback in the kernel's postinst.
+    if (stage / "usr/sbin/update-initramfs").is_file():
+        inst.run(R, "set -e\nupdate-initramfs -c -k " + shlex.quote(rel))
+        if not initrd.is_file() or not initrd.stat().st_size:
+            die(f"update-initramfs did not write {initrd}")
+        log(f"  initramfs-tools -> /boot/{initrd.name} "
+            f"({initrd.stat().st_size:,} B)")
+    else:
+        log("  [warn] no initramfs-tools in the profile: the board boots "
+            "/boot/initramfs-t2.gz (the installer ramdisk)")
     # The stamp goes last: written before the facts are read, a run that failed
     # the cross-check would leave a valid stamp behind and the next run would
     # skip straight back into the same failure.
